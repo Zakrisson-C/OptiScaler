@@ -3535,6 +3535,26 @@ bool MenuCommon::RenderMenu()
                             if (float v = config->FfxDenoiserFloorIsolation.value_or_default();
                                 ImGui::SliderFloat("Floor Isolation", &v, 0, 1))
                                 config->FfxDenoiserFloorIsolation = v;
+
+                            if (float v = config->FfxDenoiserBiasMaskStrength.value_or_default();
+                                ImGui::SliderFloat("Bias Mask Strength", &v, 0, 1))
+                                config->FfxDenoiserBiasMaskStrength = v;
+                            ShowHelpMarker("Routes pixels flagged by the DLSS bias mask\n"
+                                           "(particles, alpha layers, animated textures)\n"
+                                           "around the denoiser. 0 = previous behaviour.");
+
+                            if (float v = config->FfxDenoiserFloorDetailBoost.value_or_default();
+                                ImGui::SliderFloat("Floor Detail Boost", &v, 0, 1))
+                                config->FfxDenoiserFloorDetailBoost = v;
+                            ShowHelpMarker("Pushes high frequency texture detail into the\n"
+                                           "floor so it bypasses the denoiser.\n"
+                                           "0 = previous behaviour.");
+
+                            if (float v = config->FfxDenoiserFloorNormalSharpness.value_or_default();
+                                ImGui::SliderFloat("Floor Normal Sharpness", &v, 0, 64))
+                                config->FfxDenoiserFloorNormalSharpness = v;
+                            ShowHelpMarker("Normal edge stop in the floor filter.\n"
+                                           "Higher stops harder at creases; 0 disables.");
                         }
                     }
 

@@ -214,9 +214,43 @@ float GetRelativeSimilarity(float value, float baseline)
     return min(max(1.0f - delta, 0.0f), 1.0f);
 }
 
-// Computes a relative similarity score between value and baseline. 
+// Computes a relative similarity score between value and baseline.
 // Returns 0 below threshold, smoothly transitions to 1.0 as similarity approaches 1.
 float GetRelativeSimilarity(float value, float baseline, float threshold)
 {
     return smoothstep(threshold, 1.0f, GetRelativeSimilarity(value, baseline));
+}
+
+// Soft threshold helpers.
+//
+// A binary classification test (x > k) flickers whenever the tested quantity hovers
+// near k: neighbouring pixels and successive frames land on opposite sides of the
+// step, and any branch keyed off the result changes discontinuously. These return
+// the same decision with a C1 transition band of the given width, so downstream
+// blends vary continuously instead.
+float SoftAbove(float x, float edge, float width)
+{
+    return smoothstep(edge - max(width, 1e-6f), edge, x);
+}
+
+float SoftBelow(float x, float edge, float width)
+{
+    return smoothstep(edge, edge - max(width, 1e-6f), x);
+}
+
+// Edge-stopping weight for surface orientation.
+// 1.0 for coplanar normals, falling off as the angle between them grows.
+// Higher sharpness = harder edge stop.
+float GetNormalWeight(float3 n0, float3 n1, float sharpness)
+{
+    // Floored to keep pow() defined at sharpness 0, where the term disables itself.
+    return pow(max(saturate(dot(n0, n1)), 1e-4f), sharpness);
+}
+
+// Decodes a normal written by the floor seed pass, guarding against the
+// zero vector produced by uninitialized or skipped pixels.
+float3 SafeNormalize(float3 n, float3 fallback)
+{
+    const float len = length(n);
+    return (len > 1e-3f) ? (n * rcp(len)) : fallback;
 }

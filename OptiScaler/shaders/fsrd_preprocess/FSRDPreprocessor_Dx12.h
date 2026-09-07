@@ -30,6 +30,7 @@ class FSRDPreprocessor_Dx12
         IsDepthLinear =         1 << 1, // Interprets input depth as already linearized for view space calculations
         IsRoughnessPacked =     1 << 2, // Roughness = InNormals.A - NVSDK_NGX_DLSS_Roughness_Mode_Packed (Init param)
         Mode2Signal =           1 << 3, // Enables mode 2 denoiser outputs with discrete diffuse and specular lighting
+        HasBiasMask =           1 << 4, // InBiasMask holds a real DLSS bias-current-color mask
 
         Debug =                 1 << 16, // Denoiser and upscaler bypassed for debug out if this is set
         DebugModeMask =         0xFF << 16,
@@ -57,6 +58,9 @@ class FSRDPreprocessor_Dx12
 
         DebugFloorVariance =    16 << 17 | Debug,
         DebugFloorColor =       17 << 17 | Debug,
+
+        DebugInBiasMask =       18 << 17 | Debug, // Bias mask as applied, after strength scaling
+        DebugDemodGain =        19 << 17 | Debug, // 1 / albedo used as the demodulation divisor
     };
 
     enum class CompFlags : uint32_t
@@ -116,6 +120,17 @@ class FSRDPreprocessor_Dx12
         float FarPlane;  // Near < Far
 
         float FloorIsolation;
+
+        // Fraction of the DLSS bias mask used to route flagged pixels (particles, alpha,
+        // animated textures) around the denoiser via the floor / skip signal. 0 disables.
+        float BiasMaskStrength;
+
+        // Fraction of the floor filter's Laplacian luminance residual pushed back into the
+        // floor on the final pass, to keep texture microcontrast out of the denoiser.
+        float FloorDetailBoost;
+
+        // Exponent on the floor filter's normal edge-stopping weight.
+        float FloorNormalSharpness;
 
         uint32_t Flags; // Dynamic configuration flags. See: ConfigFlags
     };

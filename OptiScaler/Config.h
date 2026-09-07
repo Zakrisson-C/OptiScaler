@@ -426,6 +426,20 @@ class Config
     CustomOptional<float> FfxDenoiserCorrelationBias { 1.0f };
     CustomOptional<float> FfxDenoiserFloorIsolation { 1.0f };
 
+    // Routes pixels flagged by the DLSS bias-current-color mask (particles, alpha layers,
+    // animated / video textures) around the denoiser via the floor and skip signal.
+    // 0 restores the previous behaviour, where the mask was bound but unused.
+    CustomOptional<float> FfxDenoiserBiasMaskStrength { 1.0f };
+
+    // Fraction of the floor filter's high frequency luminance residual pushed back into
+    // the floor on the final pass, so texture microcontrast bypasses the denoiser.
+    // 0 restores the previous behaviour.
+    CustomOptional<float> FfxDenoiserFloorDetailBoost { 0.0f };
+
+    // Exponent on the floor filter's normal edge-stopping weight. Higher stops harder at
+    // creases and silhouettes; 0 disables the term entirely.
+    CustomOptional<float> FfxDenoiserFloorNormalSharpness { 16.0f };
+
     // FSR Common
     CustomOptional<float> FsrVerticalFov { 60.0f };
     CustomOptional<float> FsrHorizontalFov { 0.0f }; // off by default

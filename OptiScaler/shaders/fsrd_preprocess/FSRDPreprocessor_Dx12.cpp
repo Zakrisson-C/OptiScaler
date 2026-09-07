@@ -357,13 +357,19 @@ struct FSRDPreprocessor_Dx12::Impl
 
         for (int i = 0; i < FloorFilter::kPasses; i++)
         {
-            FloorFilter::Constants constants = 
+            // The detail residual is only meaningful once the wavelet has reached its full
+            // support - re-injecting it on every pass would compound it kPasses times.
+            const bool isFinalPass = (i == (FloorFilter::kPasses - 1));
+
+            FloorFilter::Constants constants =
             {
                 .DstTexSize = desc.RenderSize,
                 .RcpCrossBlNorm = rcpCrossNorm,
                 .RcpSelfBlNorm = rcpLumNorm,
                 .StepSize = 1 << i,
-                .FrameIndex = frameIndex
+                .FrameIndex = frameIndex,
+                .DetailBoost = isFinalPass ? desc.FloorDetailBoost : 0.0f,
+                .NormalSharpness = desc.FloorNormalSharpness
             };
             const auto cbData = GetAsByteSpan(constants);
 
@@ -406,13 +412,19 @@ struct FSRDPreprocessor_Dx12::Impl
             .NearPlane = desc.NearPlane,
             .FarPlane = desc.FarPlane,
             .FloorIsolation = desc.FloorIsolation,
-            .Flags = desc.Flags
+            .Flags = desc.Flags,
+            .BiasMaskStrength = desc.BiasMaskStrength
         };
 
         in.Resources.InBlurColor = m_smoothFloor;
 
         if (m_isMode2)
             packConstants.Flags |= UINT(ConvFlags::Mode2Signal);
+
+        // A null SRV reads as zero, so the shader is safe without this, but the flag keeps
+        // the "no mask provided" case explicit and visible in the debug views.
+        if (desc.Resources.InBiasMask != nullptr)
+            packConstants.Flags |= UINT(ConvFlags::HasBiasMask);
 
         const std::span<const byte> convCBData((const byte*) &packConstants, sizeof(packConstants));
         m_convShader.Dispatch(cmdList, convCBData, in.AsArray, m_out.AsRawArray, dispatchSize, true);

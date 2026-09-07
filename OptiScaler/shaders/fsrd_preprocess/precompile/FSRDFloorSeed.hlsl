@@ -71,7 +71,13 @@ Texture2D<float> InDepth : register(t2);
 
 RWTexture2D<half4> OutColor : register(u0);
 RWTexture2D<float> OutLinearDepth : register(u1);
-RWTexture2D<half2> OutDepthGradient : register(u2);
+
+// RG: View space depth gradient (per pixel central difference)
+// BA: Octahedrally encoded world normal - used as an edge stop by the floor filter.
+//
+// This aliases the conversion Motion buffer (RGBA16_FLOAT), which is scratch until the
+// packing shader overwrites it, so the extra two channels are free.
+RWTexture2D<half4> OutDepthGradient : register(u2);
 
 SamplerState LinearSampler : register(s0);
 
@@ -249,8 +255,7 @@ void PopulateSharedMemory(const uint2 groupID, const int2 gtID)
         {
             const int2 smID = int2(smFlatID % s_SM_Depth_Size.x, smFlatID / s_SM_Depth_Size.x);
             const int2 px = clamp(pxDepthOrigin + smID, int2(0, 0), maxBounds);
-            const float3 color = GetSafeFP16(InColor[px].rgb);
-            
+
             g_Depth[smID.x][smID.y] = GetViewSpacePos(px).z;
         }
     }
@@ -272,7 +277,16 @@ void CSMain(uint3 groupID : SV_GroupID, uint3 gtID : SV_GroupThreadID)
     const float depth = g_Depth[smID.x][smID.y];
     const half2 gradient = GetDepthGradient(groupID.xy, gtID.xy);
 
+    // Surface orientation guide for the floor filter.
+    //
+    // InNormals was already bound here but never sampled. Depth alone cannot tell a
+    // silhouette from a crease, so the wavelet filter had to stay conservative
+    // everywhere; carrying the normal lets it stop hard at geometric edges and
+    // blur freely along a surface.
+    const float3 worldNormal = SafeNormalize(InNormals[px].rgb, float3(0.0f, 0.0f, 1.0f));
+    const half2 octNormal = half2(OctahedralEncode(worldNormal));
+
     OutColor[px] = color;
     OutLinearDepth[px] = depth;
-    OutDepthGradient[px] = gradient;
+    OutDepthGradient[px] = half4(gradient, octNormal);
 }

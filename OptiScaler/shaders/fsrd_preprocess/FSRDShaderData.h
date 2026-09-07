@@ -82,7 +82,11 @@ namespace FSRD
             uint32_t FrameIndex;
 
             uint32_t Flags;
-            float _Padding[3];
+
+            float DetailBoost;       // Laplacian residual re-injection. Final pass only.
+            float NormalSharpness;   // Exponent on the normal edge-stopping weight.
+
+            float _Padding[1];
         };
 
         union Input
@@ -152,6 +156,9 @@ namespace FSRD
 
             float FloorIsolation;
             uint32_t Flags;  // Dynamic configuration flags. See: ConfigFlags
+
+            float BiasMaskStrength; // Scales InBiasMask when routing pixels into the floor
+            float _Padding[3];
         };
 
         union Input
