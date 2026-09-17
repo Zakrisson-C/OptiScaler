@@ -3555,6 +3555,36 @@ bool MenuCommon::RenderMenu()
                                 config->FfxDenoiserFloorNormalSharpness = v;
                             ShowHelpMarker("Normal edge stop in the floor filter.\n"
                                            "Higher stops harder at creases; 0 disables.");
+
+                            if (float v = config->FfxDenoiserFloorAlbedoGuide.value_or_default();
+                                ImGui::SliderFloat("Floor Albedo Guide", &v, 0, 1))
+                                config->FfxDenoiserFloorAlbedoGuide = v;
+                            ShowHelpMarker("Releases the floor's luminance edge stop where\n"
+                                           "diffuse albedo says the taps share a material, so\n"
+                                           "shadows and reflections reach the denoiser instead\n"
+                                           "of the floor. 0 = previous behaviour.");
+
+                            if (float v = config->FfxDenoiserFloorLumSymmetry.value_or_default();
+                                ImGui::SliderFloat("Floor Luma Symmetry", &v, 0, 1))
+                                config->FfxDenoiserFloorLumSymmetry = v;
+                            ShowHelpMarker("Makes the floor's luminance test symmetric between\n"
+                                           "centre and tap. The centre-only form routes the two\n"
+                                           "sides of one bright edge differently.\n"
+                                           "0 = previous behaviour.");
+
+                            if (float v = config->FfxDenoiserFloorGrazingSharpness.value_or_default();
+                                ImGui::SliderFloat("Floor Grazing Sharpness", &v, 0, 32))
+                                config->FfxDenoiserFloorGrazingSharpness = v;
+                            ShowHelpMarker("Extra normal edge stop in proportion to screen space\n"
+                                           "surface slope, where the depth gradient is least\n"
+                                           "reliable. 0 disables.");
+
+                            if (float v = config->FfxDenoiserFloorSoftMin.value_or_default();
+                                ImGui::SliderFloat("Floor Soft Min", &v, 0, 0.1f, "%.4f"))
+                                config->FfxDenoiserFloorSoftMin = v;
+                            ShowHelpMarker("Smooths the clamp of the floor against raw colour.\n"
+                                           "An exact min() creases where the two fields cross.\n"
+                                           "0 = exact min().");
                         }
                     }
 

@@ -247,6 +247,42 @@ float GetNormalWeight(float3 n0, float3 n1, float sharpness)
     return pow(max(saturate(dot(n0, n1)), 1e-4f), sharpness);
 }
 
+// Quadratic smooth minimum. k is the blend radius in the units of the inputs;
+// k <= 0 returns the exact min(). The result never exceeds min(a, b).
+float3 SoftMin(float3 a, float3 b, float k)
+{
+    if (k <= 0.0f)
+        return min(a, b);
+
+    const float3 h = saturate(0.5f + 0.5f * (b - a) * rcp(k));
+    return lerp(b, a, h) - (k * h) * (1.0f - h);
+}
+
+// Material agreement between two albedo samples.
+//
+// The floor filter's only appearance discriminator is luminance, which cannot tell an
+// albedo edge (where the kernel should stop) from a shadow or reflection edge (where it
+// should not). Diffuse albedo is the material itself: view independent, illumination
+// free, and free of the Fresnel sweep that makes specular albedo vary across a curved
+// panel with no material change under it.
+//
+// Compared in two parts so that a dark and a bright patch of the same paint agree:
+// relative intensity, and chromaticity with intensity divided out.
+float GetAlbedoAgreement(float3 a0, float3 a1)
+{
+    const float l0 = GetLuminance(a0);
+    const float l1 = GetLuminance(a1);
+    const float wIntensity = GetRelativeSimilarity(l0, l1);
+
+    const float3 c0 = a0 * rcp(max(l0, 1e-3f));
+    const float3 c1 = a1 * rcp(max(l1, 1e-3f));
+    const float3 dc = abs(c0 - c1);
+
+    const float wChroma = saturate(1.0f - 0.5f * (dc.r + dc.g + dc.b));
+
+    return wIntensity * wChroma;
+}
+
 // Decodes a normal written by the floor seed pass, guarding against the
 // zero vector produced by uninitialized or skipped pixels.
 float3 SafeNormalize(float3 n, float3 fallback)

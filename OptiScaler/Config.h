@@ -440,6 +440,25 @@ class Config
     // creases and silhouettes; 0 disables the term entirely.
     CustomOptional<float> FfxDenoiserFloorNormalSharpness { 16.0f };
 
+    // Fraction of the floor filter's luminance edge-stop released where diffuse albedo says
+    // two taps sit on the same material, so shadows and reflections blur through into the
+    // denoiser signal instead of being preserved into the floor and returned blurred.
+    // 0 restores the previous behaviour.
+    CustomOptional<float> FfxDenoiserFloorAlbedoGuide { 1.0f };
+
+    // Blends the floor filter's luminance normaliser from centre-only (0) to max(centre, tap)
+    // (1). The centre-only form routes the two sides of one luminance edge through different
+    // paths. 0 restores the previous behaviour.
+    CustomOptional<float> FfxDenoiserFloorLumSymmetry { 1.0f };
+
+    // Additional normal edge-stop exponent applied in proportion to screen space surface
+    // slope, where the single pixel depth gradient is least reliable. 0 disables the term.
+    CustomOptional<float> FfxDenoiserFloorGrazingSharpness { 0.0f };
+
+    // Smoothing radius on the min(raw, floor) clamp in the packing shader, in the units of
+    // the colour buffer. 0 restores the exact min().
+    CustomOptional<float> FfxDenoiserFloorSoftMin { 0.0f };
+
     // FSR Common
     CustomOptional<float> FsrVerticalFov { 60.0f };
     CustomOptional<float> FsrHorizontalFov { 0.0f }; // off by default

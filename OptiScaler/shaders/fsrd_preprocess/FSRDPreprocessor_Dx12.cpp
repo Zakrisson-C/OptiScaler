@@ -369,7 +369,10 @@ struct FSRDPreprocessor_Dx12::Impl
                 .StepSize = 1 << i,
                 .FrameIndex = frameIndex,
                 .DetailBoost = isFinalPass ? desc.FloorDetailBoost : 0.0f,
-                .NormalSharpness = desc.FloorNormalSharpness
+                .NormalSharpness = desc.FloorNormalSharpness,
+                .AlbedoGuideStrength = desc.FloorAlbedoGuide,
+                .LumSymmetry = desc.FloorLumSymmetry,
+                .GrazingSharpness = desc.FloorGrazingSharpness
             };
             const auto cbData = GetAsByteSpan(constants);
 
@@ -377,7 +380,8 @@ struct FSRDPreprocessor_Dx12::Impl
             {
                 .InColor = m_smoothFloor,
                 .InLinearDepth = m_LinearDepth.Get(),
-                .InDepthGradient = m_out.Resources.Motion.Get()
+                .InDepthGradient = m_out.Resources.Motion.Get(),
+                .InDiffAlbedo = desc.Resources.InDiffAlbedo
             }};
 
             FloorFilter::Output out = { .Resources = 
@@ -413,7 +417,8 @@ struct FSRDPreprocessor_Dx12::Impl
             .FarPlane = desc.FarPlane,
             .FloorIsolation = desc.FloorIsolation,
             .Flags = desc.Flags,
-            .BiasMaskStrength = desc.BiasMaskStrength
+            .BiasMaskStrength = desc.BiasMaskStrength,
+            .FloorSoftMin = desc.FloorSoftMin
         };
 
         in.Resources.InBlurColor = m_smoothFloor;

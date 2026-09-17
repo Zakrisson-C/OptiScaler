@@ -215,15 +215,34 @@ void CSMain(uint3 groupID : SV_GroupID, uint3 gtID : SV_GroupThreadID)
     const uint2 px = groupID.xy * s_ThreadGroupSize + gtID.xy;
     const float2 uv = (float2(px) + 0.5f) * DstTexSize.zw;
     
-    if (px.x >= DstTexSize.x || px.y >= DstTexSize.y)
-    {
-        OutColor[px] = 0.0f;
-        return;
-    }
-    
+    // The bounds return is deferred past the shared memory fill on the denoisable path.
+    //
+    // PopulateSharedMemory ends in GroupMemoryBarrierWithGroupSync(), and HLSL requires
+    // every thread in a group to reach a group barrier. Returning here first left the
+    // edge threads short of it. Formally that is undefined behaviour; in practice the
+    // fill is cooperative and indexed by flatID, so the slots those threads own were
+    // simply never written and kept whatever the previous dispatch left in them.
+    // GetRawColorSimilarity then ran its 5x5 SSIM across the stale entries, and the
+    // corrupted correlation drove lerp(denoisedColor, rawColor, rawWeight) - the strip
+    // of garbage pixels along the right edge.
+    //
+    // DstTexSize here is the render resolution, not the output resolution, so it is
+    // rarely a multiple of 8; width and height fail independently, which is why the
+    // strip appears on one edge and not the other.
+    //
+    // The blit path never reads the LDS, and FLAGS_RAW_SOURCE_BLIT comes from the
+    // constant buffer, so it is group uniform and the whole group takes the same side.
+    // Returning inside it without reaching a barrier is therefore safe, and it avoids
+    // paying for a full tile fill on every bypass frame.
     [branch]
     if (IsSet(FLAGS_RAW_SOURCE_BLIT))
     {
+        if (px.x >= DstTexSize.x || px.y >= DstTexSize.y)
+        {
+            OutColor[px] = 0.0f;
+            return;
+        }
+
         [branch]
         if (IsSet(FLAGS_SCALE_SRC))
             OutColor[px] = InDenoisedSignal1.SampleLevel(LinearSampler, uv, 0);
@@ -232,8 +251,18 @@ void CSMain(uint3 groupID : SV_GroupID, uint3 gtID : SV_GroupThreadID)
     }
     else
     {
-        const int2 smID = gtID.xy + s_SM_HaloOffset;      
+        // Every thread in the group reaches the barrier inside PopulateSharedMemory,
+        // including the out-of-bounds ones, before any of them is allowed to leave.
+        // Its own taps are already clamped to DstTexSize - 1.
         PopulateSharedMemory(groupID.xy, gtID.xy);
+
+        if (px.x >= DstTexSize.x || px.y >= DstTexSize.y)
+        {
+            OutColor[px] = 0.0f;
+            return;
+        }
+
+        const int2 smID = gtID.xy + s_SM_HaloOffset;
 
         // Correlate raw RT input with denoiser output
         const half rawWeight = GetRawColorSimilarity(gtID.xy) * CorrelationBias;

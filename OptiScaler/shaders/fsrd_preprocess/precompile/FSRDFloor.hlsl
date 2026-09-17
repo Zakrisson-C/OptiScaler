@@ -3,7 +3,7 @@
 #define MainRS \
     "RootFlags(0), " \
     "CBV(b0), " \
-    "DescriptorTable(SRV(t0, numDescriptors = 3), visibility = SHADER_VISIBILITY_ALL), " \
+    "DescriptorTable(SRV(t0, numDescriptors = 4), visibility = SHADER_VISIBILITY_ALL), " \
     "DescriptorTable(UAV(u0, numDescriptors = 1), visibility = SHADER_VISIBILITY_ALL), " \
     "StaticSampler(s0, " \
         "filter = FILTER_MIN_MAG_MIP_LINEAR, " \
@@ -32,6 +32,9 @@ Texture2D<float> InLinearDepth : register(t1);
 // RG: View space depth gradient, BA: Octahedrally encoded world normal
 Texture2D<half4> InDepthGradient : register(t2);
 
+// RGB: Diffuse albedo. The material guide - see GetAlbedoAgreement.
+Texture2D<half3> InDiffAlbedo : register(t3);
+
 RWTexture2D<half4> OutColor : register(u0);
 
 SamplerState LinearSampler : register(s0);
@@ -55,7 +58,19 @@ cbuffer CB_Analysis : register(b0)
     // Exponent on the normal edge-stopping weight. Higher = harder stop at creases.
     float NormalSharpness;
 
-    float _Padding;
+    // Fraction of the luminance edge-stop released where diffuse albedo says the taps
+    // sit on the same material. 0 reproduces the previous behaviour exactly.
+    float AlbedoGuideStrength;
+
+    // Blends the luminance normaliser from centre-only (0) to max(centre, tap) (1).
+    // 0 reproduces the previous behaviour exactly.
+    float LumSymmetry;
+
+    // Additional normal edge-stop exponent applied in proportion to screen space
+    // surface slope. 0 disables the term.
+    float GrazingSharpness;
+
+    float2 _Padding;
 }
 
 bool IsSet(uint mask) { return (Flags & mask) == mask; }
@@ -64,6 +79,10 @@ bool IsSet(uint mask) { return (Flags & mask) == mask; }
 // is a single pixel central difference, so extrapolating it over a 16 pixel stride is
 // only trustworthy up to a point - past this the tap is treated as off-plane.
 static const float s_MaxPlaneOffset = 0.5f;
+
+// Floor on the luminance range norm scale under full albedo agreement. The appearance
+// term is widened, never switched off, so a genuine outlier tap is still rejected.
+static const float s_MinLumScale = 0.1f;
 
 float GetSpatialWeight(int x, int y)
 {
@@ -91,7 +110,14 @@ void CSMain(uint3 groupID : SV_GroupID, uint3 gtID : SV_GroupThreadID)
     
     const float4 centerColor = InColor[px];    
     const float centerLum = GetLuminance(centerColor.rgb);
-    const float rcpCenterLum = rcp(max(centerLum, 1e-1f));   
+    const float3 centerAlbedo = InDiffAlbedo[px];
+
+    // Albedo carries no material information where it is near black - unlit billboards,
+    // very dark paint, blended transparents whose albedo mixes two surfaces. Relaxing the
+    // luminance stop there would be relaxing it on no evidence, so confidence gates the
+    // whole term and the filter falls back to its previous behaviour.
+    const float albedoConfidence = SoftAbove(GetLuminance(centerAlbedo), 0.02f, 0.015f);
+    const float guideStrength = AlbedoGuideStrength * albedoConfidence;
     
     const float centerDepth = InLinearDepth[px];
     const half4 centerGuide = InDepthGradient[px];
@@ -110,6 +136,16 @@ void CSMain(uint3 groupID : SV_GroupID, uint3 gtID : SV_GroupThreadID)
       
     const float depthNormScale = adaptiveScale * (rcpDepthScale * RcpCrossBlNorm);
     const float selfNormScale = adaptiveScale * RcpSelfBlNorm;
+
+    // Grazing incidence, measured as screen space surface slope.
+    //
+    // The gradient is a single pixel central difference, so on a steeply slanted surface
+    // the kernel spans a large depth range and the plane extrapolation is least reliable
+    // exactly where it is asked to reach furthest. Tightening the orientation stop in
+    // proportion to slope is the geometric counterweight.
+    const float slope = length(float2(centerDepthGrad)) * rcp(max(centerDepth, 1e-2f));
+    const float grazing = saturate(slope * 64.0f);
+    const float normalSharpness = NormalSharpness + GrazingSharpness * grazing;
     
     const int2 maxBounds = int2(DstTexSize.xy) - 1;
     float4 mean = 0;
@@ -128,8 +164,29 @@ void CSMain(uint3 groupID : SV_GroupID, uint3 gtID : SV_GroupThreadID)
             const float lum = isTap ? GetLuminance(color.rgb) : centerLum;
 
             // Bilateral luma weight
-            float lumDelta = (centerLum - lum) * rcpCenterLum;
-            const float wLum = GetRangeWeight(lumDelta, selfNormScale);
+            //
+            // Normalising by the centre luminance alone makes the test asymmetric: a dark
+            // centre next to a bright tap produces a delta scaled by the 1e-1 clamp and
+            // stops hard, while the bright centre looking back at the same pair sees a
+            // delta near 1 and blurs freely. Either side of one luminance edge is then
+            // routed differently - one into the skip path, one into the denoiser - which
+            // is a two region split with a soft boundary in the middle of a single
+            // reflection. LumSymmetry removes the asymmetry.
+            const float lumNorm = max(lerp(centerLum, max(centerLum, lum), LumSymmetry), 1e-1f);
+            const float lumDelta = (centerLum - lum) * rcp(lumNorm);
+
+            // Material guide.
+            //
+            // Where albedo says the taps are the same material, a luminance difference
+            // between them is illumination - a shadow, or a reflection - and it belongs in
+            // the denoiser, not preserved into the floor and returned blurred through the
+            // skip signal. Widening the range norm lets the kernel blur through it. The
+            // depth and orientation weights still multiply in below, so this can never
+            // blur across a crease or a silhouette; it only releases the appearance term.
+            const float3 tapAlbedo = isTap ? (float3) InDiffAlbedo[tapPX] : centerAlbedo;
+            const float agreement = isTap ? GetAlbedoAgreement(centerAlbedo, tapAlbedo) : 1.0f;
+            const float lumRelax = lerp(1.0f, s_MinLumScale, guideStrength * agreement);
+            const float wLum = GetRangeWeight(lumDelta, selfNormScale * lumRelax);
 
             // Coplanarity weight
             //
@@ -154,7 +211,7 @@ void CSMain(uint3 groupID : SV_GroupID, uint3 gtID : SV_GroupThreadID)
             // Stops the kernel at creases and silhouettes that the plane test cannot see,
             // which is what previously forced the depth and luma norms to stay tight.
             const float3 tapNormal = OctahedralDecode(tapGuide.zw);
-            const float wNormal = isTap ? GetNormalWeight(centerNormal, tapNormal, NormalSharpness) : 1.0f;
+            const float wNormal = isTap ? GetNormalWeight(centerNormal, tapNormal, normalSharpness) : 1.0f;
 
             const float wSpatial = GetSpatialWeight(x, y);
             const float w = wSpatial * wDepth * wLum * wNormal;

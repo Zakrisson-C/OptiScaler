@@ -51,6 +51,8 @@ static const uint2 s_ThreadGroupSize = uint2(THREAD_GROUP_SIZE_X, THREAD_GROUP_S
 
 #define FLAGS_DEBUG_IN_BIAS_MASK        (18 << 17 | FLAGS_DEBUG)
 #define FLAGS_DEBUG_DEMOD_GAIN          (19 << 17 | FLAGS_DEBUG)
+#define FLAGS_DEBUG_HIT_DIST_GATE       (20 << 17 | FLAGS_DEBUG)
+#define FLAGS_DEBUG_DENOISER_FRACTION   (21 << 17 | FLAGS_DEBUG)
 
 // DLSS-RR Inputs
 Texture2D<half3> InColor : register(t0); // RGB - NVSDK_NGX_Parameter_Color
@@ -100,7 +102,11 @@ cbuffer CB_Packing : register(b0)
     // Fraction of the DLSS bias mask applied when routing pixels around the denoiser.
     // 0 reproduces the previous behaviour exactly.
     float BiasMaskStrength;
-    float3 _Padding;
+
+    // Smoothing radius on the floor/raw clamp. 0 reproduces the exact min().
+    float FloorSoftMin;
+
+    float2 _Padding;
 };
 
 bool IsSet(uint mask) { return (Flags & mask) == mask; }
@@ -204,7 +210,15 @@ void CSMain(uint3 groupID : SV_GroupID, uint3 gtID : SV_GroupThreadID)
     const float biasWeight = saturate(biasMask * BiasMaskStrength);
     floorColor.rgb = lerp(floorColor.rgb, rawColor, biasWeight);
 
-    floorColor.rgb = min(rawColor, floorColor.rgb);
+    // Soft clamp.
+    //
+    // An exact min() of two smooth fields creases along the curve where they cross, and
+    // the two sides of that curve are routed differently: below it the split is normal,
+    // on it denoiserColor collapses to zero and the pixel travels entirely through the
+    // skip path. A discrete operator producing a two region split, in the same family as
+    // the isEmissive and canUseHitDist cuts. The quadratic soft min only ever dips below
+    // min(), so the floor can never exceed the raw colour.
+    floorColor.rgb = SoftMin(rawColor, floorColor.rgb, FloorSoftMin);
     const float3 denoiserColor = rawColor - floorColor.rgb;
 
     // Depth - full position needed for reprojected depth delta
@@ -244,6 +258,7 @@ void CSMain(uint3 groupID : SV_GroupID, uint3 gtID : SV_GroupThreadID)
         OutMotion[px] = half4(motionOut, 0.0f);
 
         half hitDist = 0.0f;
+        float dbgHitGate = 0.0f;
         half3 demodColor = 0.0f;
         float3 fusedAlbedo = 0.0f;
         float demodGain = 0.0f;
@@ -297,6 +312,7 @@ void CSMain(uint3 groupID : SV_GroupID, uint3 gtID : SV_GroupThreadID)
                                       * (1.0f - isEmissive)
                                       * (1.0f - biasWeight);
             hitDist = GetSafeFP16(InSpecHitDist[px] * canUseHitDist);
+            dbgHitGate = canUseHitDist;
             
             [branch]
             if (!IsSet(FLAGS_DEBUG))
@@ -353,8 +369,39 @@ void CSMain(uint3 groupID : SV_GroupID, uint3 gtID : SV_GroupThreadID)
             {
                 // Inputs
                 case FLAGS_DEBUG_IN_SPEC_HIT_DIST:
-                    debugColor = TurboColormap(frac(hitDist * 0.1f));
+                {
+                    // frac() wrapped every 10 units, so an absent buffer and a 10 unit
+                    // buffer rendered identically - the reason this view could never
+                    // settle whether hit distance reaches the panel at all. The log remap
+                    // over [0, 127] is monotone across the whole range, and an exactly
+                    // zero sample is flagged magenta so an absent input is distinct from
+                    // a near hit.
+                    const float rawHitDist = InSpecHitDist[px];
+                    debugColor = (rawHitDist <= 0.0f)
+                               ? float3(1.0f, 0.0f, 1.0f)
+                               : TurboColormap(log2(1.0f + rawHitDist) * (1.0f / 7.0f));
                     break;
+                }
+
+                case FLAGS_DEBUG_HIT_DIST_GATE:
+                    // The canUseHitDist ramp itself, separated from the buffer it scales.
+                    // Blue = closed (specular reprojects with the surface), red = open.
+                    // Mode 1 never assigns it, so a uniformly blue frame in Mode 1 is
+                    // expected rather than a fault.
+                    debugColor = TurboColormap(dbgHitGate);
+                    break;
+
+                case FLAGS_DEBUG_DENOISER_FRACTION:
+                {
+                    // Share of the pixel routed to the denoiser rather than around it via
+                    // the skip signal. Blue = travelling around the denoiser blurred by
+                    // the floor, red = being denoised. Reflections and shadows reading
+                    // blue is the floor capturing lighting it should have passed through.
+                    const float rawLum = GetLuminance(rawColor);
+                    const float denLum = GetLuminance(denoiserColor);
+                    debugColor = TurboColormap(saturate(denLum * rcp(max(rawLum, 1e-3f))));
+                    break;
+                }
                 
                 case FLAGS_DEBUG_NORM_DEPTH:
                     debugColor = TurboColormap(compressedDepth);
@@ -385,7 +432,8 @@ void CSMain(uint3 groupID : SV_GroupID, uint3 gtID : SV_GroupThreadID)
                     break;
                 
                 case FLAGS_DEBUG_OUT_LINEAR_DEPTH:
-                    debugColor = TurboColormap(frac(viewSpacePos.z * 0.1));
+                    // Same wrap bug as the hit distance view; same monotone remap.
+                    debugColor = TurboColormap(log2(1.0f + viewSpacePos.z) * (1.0f / 11.0f));
                     break;
                 
                 case FLAGS_DEBUG_OUT_MOTION:

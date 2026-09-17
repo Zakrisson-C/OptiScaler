@@ -85,8 +85,12 @@ namespace FSRD
 
             float DetailBoost;       // Laplacian residual re-injection. Final pass only.
             float NormalSharpness;   // Exponent on the normal edge-stopping weight.
+            float AlbedoGuideStrength; // Luminance edge-stop released on same-material taps.
 
-            float _Padding[1];
+            float LumSymmetry;       // 0 = centre-normalised luma delta, 1 = symmetric.
+            float GrazingSharpness;  // Extra normal edge-stop proportional to slope.
+
+            float _Padding[2];
         };
 
         union Input
@@ -96,6 +100,7 @@ namespace FSRD
                 ID3D12Resource* InColor;
                 ID3D12Resource* InLinearDepth;
                 ID3D12Resource* InDepthGradient;
+                ID3D12Resource* InDiffAlbedo; // Material guide - see GetAlbedoAgreement
             };
 
             // The number of D3D12 resources in the struct
@@ -158,7 +163,8 @@ namespace FSRD
             uint32_t Flags;  // Dynamic configuration flags. See: ConfigFlags
 
             float BiasMaskStrength; // Scales InBiasMask when routing pixels into the floor
-            float _Padding[3];
+            float FloorSoftMin;     // Smoothing radius on the floor/raw clamp. 0 = exact min()
+            float _Padding[2];
         };
 
         union Input

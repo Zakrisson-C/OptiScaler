@@ -221,6 +221,8 @@ enum class DebugModes : uint64_t
 
     InBiasMask = FSRDConvFlags::DebugInBiasMask,
     DemodGain = FSRDConvFlags::DebugDemodGain,
+    HitDistGate = FSRDConvFlags::DebugHitDistGate,
+    DenoiserFraction = FSRDConvFlags::DebugDenoiserFraction,
 
     CompositionDebugOffset = 16u,
     CompositionDebug = (uint64_t) FSRDCompFlags::Debug << CompositionDebugOffset,
@@ -290,6 +292,8 @@ constexpr auto kDebugModes = std::to_array<ModeNamePair>(
 
     { "InBiasMask", (uint64_t) DebugModes::InBiasMask },
     { "DemodGain", (uint64_t) DebugModes::DemodGain },
+    { "HitDistGate", (uint64_t) DebugModes::HitDistGate },
+    { "DenoiserFraction", (uint64_t) DebugModes::DenoiserFraction },
     
     { "Signal1", (uint64_t) DebugModes::Signal1 },
     { "Signal2", (uint64_t) DebugModes::Signal2 },
@@ -898,6 +902,10 @@ bool FSRDFeatureDx12::ConvertDenoiserBuffers(ID3D12GraphicsCommandList* InComman
     _convDesc.BiasMaskStrength = cfg.FfxDenoiserBiasMaskStrength.value_or_default();
     _convDesc.FloorDetailBoost = cfg.FfxDenoiserFloorDetailBoost.value_or_default();
     _convDesc.FloorNormalSharpness = cfg.FfxDenoiserFloorNormalSharpness.value_or_default();
+    _convDesc.FloorAlbedoGuide = cfg.FfxDenoiserFloorAlbedoGuide.value_or_default();
+    _convDesc.FloorLumSymmetry = cfg.FfxDenoiserFloorLumSymmetry.value_or_default();
+    _convDesc.FloorGrazingSharpness = cfg.FfxDenoiserFloorGrazingSharpness.value_or_default();
+    _convDesc.FloorSoftMin = cfg.FfxDenoiserFloorSoftMin.value_or_default();
 
     if (s_isRoughnessPacked)
         _convDesc.Flags |= (uint32_t) FSRDConvFlags::IsRoughnessPacked;

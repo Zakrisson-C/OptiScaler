@@ -61,6 +61,9 @@ class FSRDPreprocessor_Dx12
 
         DebugInBiasMask =       18 << 17 | Debug, // Bias mask as applied, after strength scaling
         DebugDemodGain =        19 << 17 | Debug, // 1 / albedo used as the demodulation divisor
+
+        DebugHitDistGate =      20 << 17 | Debug, // canUseHitDist ramp, separate from the buffer it scales
+        DebugDenoiserFraction = 21 << 17 | Debug, // Share of the pixel routed to the denoiser vs the skip signal
     };
 
     enum class CompFlags : uint32_t
@@ -131,6 +134,22 @@ class FSRDPreprocessor_Dx12
 
         // Exponent on the floor filter's normal edge-stopping weight.
         float FloorNormalSharpness;
+
+        // Fraction of the floor filter's luminance edge-stop released where diffuse albedo
+        // says two taps sit on the same material, so shadows and reflections are blurred
+        // through into the denoiser signal instead of preserved into the floor. 0 disables.
+        float FloorAlbedoGuide;
+
+        // Blends the floor's luminance normaliser from centre-only (0) to max(centre, tap)
+        // (1). 0 reproduces the previous asymmetric behaviour.
+        float FloorLumSymmetry;
+
+        // Additional normal edge-stop exponent applied in proportion to screen space
+        // surface slope. 0 disables.
+        float FloorGrazingSharpness;
+
+        // Smoothing radius on the min(raw, floor) clamp in the packing shader. 0 = exact min().
+        float FloorSoftMin;
 
         uint32_t Flags; // Dynamic configuration flags. See: ConfigFlags
     };
