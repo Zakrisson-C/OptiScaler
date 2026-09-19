@@ -459,6 +459,33 @@ class Config
     // the colour buffer. 0 restores the exact min().
     CustomOptional<float> FfxDenoiserFloorSoftMin { 0.0f };
 
+    // --- Third draft: diagnostics and input-encoding probes ---
+
+    // Enables FSR-RR's OWN debug views (Virtual Hit Pos, View Centered Pos, Motion Vectors Z).
+    // FFX_DENOISER_ENABLE_DEBUGGING is a runtime create flag the SDK honours in any build;
+    // it was previously wrapped in OptiScaler's own #ifdef _DEBUG, which kept these
+    // unreachable in Release. Costs some memory. Requires a denoiser context recreate.
+    CustomOptional<bool> FfxDenoiserFsrDebugViews { false };
+
+    // -1 = OVERVIEW (all viewports tiled). 0..11 = that viewport full screen.
+    CustomOptional<int> FfxDenoiserFsrDebugViewport { -1 };
+
+    // Re-encodes roughness before anything consumes it. 1.0 = bit-identical.
+    CustomOptional<float> FfxDenoiserRoughnessExponent { 1.0f };
+
+    // Scales the specular ray length handed to FSR-RR. 1.0 = bit-identical.
+    CustomOptional<float> FfxDenoiserHitDistScale { 1.0f };
+
+    // Target value for the roughness null-probe debug view.
+    CustomOptional<float> FfxDenoiserRoughnessProbe { 0.1f };
+
+    // Pulls the floor off near-mirror surfaces. 0 = bit-identical.
+    CustomOptional<float> FfxDenoiserFloorSpecGuard { 0.0f };
+
+    // Biases the Mode 2 split toward specular on smooth surfaces. 0 = bit-identical.
+    // Contingent on the signal-delta view confirming the split is degenerate.
+    CustomOptional<float> FfxDenoiserSplitPrior { 0.0f };
+
     // FSR Common
     CustomOptional<float> FsrVerticalFov { 60.0f };
     CustomOptional<float> FsrHorizontalFov { 0.0f }; // off by default

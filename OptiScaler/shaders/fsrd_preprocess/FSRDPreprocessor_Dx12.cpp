@@ -418,7 +418,12 @@ struct FSRDPreprocessor_Dx12::Impl
             .FloorIsolation = desc.FloorIsolation,
             .Flags = desc.Flags,
             .BiasMaskStrength = desc.BiasMaskStrength,
-            .FloorSoftMin = desc.FloorSoftMin
+            .FloorSoftMin = desc.FloorSoftMin,
+            .RoughnessExponent = desc.RoughnessExponent,
+            .HitDistScale = desc.HitDistScale,
+            .FloorSpecGuard = desc.FloorSpecGuard,
+            .SplitPriorStrength = desc.SplitPriorStrength,
+            .RoughnessProbe = desc.RoughnessProbe
         };
 
         in.Resources.InBlurColor = m_smoothFloor;

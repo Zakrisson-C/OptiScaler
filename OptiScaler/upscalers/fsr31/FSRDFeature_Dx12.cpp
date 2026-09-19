@@ -223,6 +223,8 @@ enum class DebugModes : uint64_t
     DemodGain = FSRDConvFlags::DebugDemodGain,
     HitDistGate = FSRDConvFlags::DebugHitDistGate,
     DenoiserFraction = FSRDConvFlags::DebugDenoiserFraction,
+    SignalDelta = FSRDConvFlags::DebugSignalDelta,
+    RoughnessProbe = FSRDConvFlags::DebugRoughnessProbe,
 
     CompositionDebugOffset = 16u,
     CompositionDebug = (uint64_t) FSRDCompFlags::Debug << CompositionDebugOffset,
@@ -294,6 +296,8 @@ constexpr auto kDebugModes = std::to_array<ModeNamePair>(
     { "DemodGain", (uint64_t) DebugModes::DemodGain },
     { "HitDistGate", (uint64_t) DebugModes::HitDistGate },
     { "DenoiserFraction", (uint64_t) DebugModes::DenoiserFraction },
+    { "SignalDelta", (uint64_t) DebugModes::SignalDelta },
+    { "RoughnessProbe", (uint64_t) DebugModes::RoughnessProbe },
     
     { "Signal1", (uint64_t) DebugModes::Signal1 },
     { "Signal2", (uint64_t) DebugModes::Signal2 },
@@ -423,10 +427,17 @@ bool FSRDFeatureDx12::CreateDenoiserContext()
         .flags = 0
     };
 
-#ifdef _DEBUG
-    LOG_INFO("Debug checking enabled for denoiser!");
-    _denoiserCtxDesc.flags |= FFX_DENOISER_ENABLE_DEBUGGING;
-#endif
+    // FFX_DENOISER_ENABLE_DEBUGGING is a runtime create flag the SDK honours in any build.
+    // It was previously wrapped in OptiScaler's own #ifdef _DEBUG, which kept FSR-RR's own
+    // debug views - Virtual Hit Pos, View Centered Pos, Motion Vectors Z - unreachable in
+    // Release. Virtual Hit Pos is the only view that shows the END of the
+    // DLSS -> shim -> FSR-RR chain, so it is what settles hit-distance units and camera
+    // parameters; InSpecHitDist only ever showed what the shim received.
+    if (Config::Instance()->FfxDenoiserFsrDebugViews.value_or_default())
+    {
+        LOG_INFO("FSR-RR denoiser debug views enabled (increases memory use)");
+        _denoiserCtxDesc.flags |= FFX_DENOISER_ENABLE_DEBUGGING;
+    }
 
     // Create the denoiser context
     {   
@@ -591,19 +602,35 @@ bool FSRDFeatureDx12::Evaluate(ID3D12GraphicsCommandList* InCommandList, NVSDK_N
 
         if (isFfxDebug)
         {
-            ffxDispatchDescHeader* signalHeader = denoiserDesc.header.pNext;
-            signalHeader->pNext = &dispatchDebugView.header;
+            // Append rather than overwrite. The previous line clobbered whatever was already
+            // chained at that node; harmless while this path never executed, not harmless now.
+            ffxDispatchDescHeader* tail = denoiserDesc.header.pNext;
+
+            while (tail != nullptr && tail->pNext != nullptr)
+                tail = tail->pNext;
+
+            if (tail != nullptr)
+                tail->pNext = &dispatchDebugView.header;
 
             ID3D12Resource* dstTex;
             TryGetLoggedResource(inParams, NVSDK_NGX_Parameter_Output, dstTex);
+
+            int debugViewport = cfg.FfxDenoiserFsrDebugViewport.value_or_default();
+
+            if (debugViewport >= int(FFX_API_DENOISER_DEBUG_VIEW_MAX_VIEWPORTS))
+                debugViewport = int(FFX_API_DENOISER_DEBUG_VIEW_MAX_VIEWPORTS) - 1;
 
             dispatchDebugView = 
             { 
                 .header = { .type = FFX_API_DISPATCH_DESC_DEBUG_VIEW_TYPE_DENOISER }, 
                 .output = ffxApiGetResourceDX12(dstTex, FFX_API_RESOURCE_STATE_UNORDERED_ACCESS),
                 .outputSize = { TargetWidth(), TargetHeight() },
-                .mode = FFX_API_DENOISER_DEBUG_VIEW_MODE_OVERVIEW,
-                .viewportIndex = 0
+                // The named SDK views are viewports, not modes: the enum is only
+                // OVERVIEW / FULLSCREEN_VIEWPORT. -1 keeps the tiled overview, which shows
+                // every viewport at once; 0..MAX-1 blows one up full screen.
+                .mode = (debugViewport < 0) ? uint32_t(FFX_API_DENOISER_DEBUG_VIEW_MODE_OVERVIEW)
+                                            : uint32_t(FFX_API_DENOISER_DEBUG_VIEW_MODE_FULLSCREEN_VIEWPORT),
+                .viewportIndex = uint32_t(debugViewport < 0 ? 0 : debugViewport)
             };
         }
 
@@ -906,6 +933,11 @@ bool FSRDFeatureDx12::ConvertDenoiserBuffers(ID3D12GraphicsCommandList* InComman
     _convDesc.FloorLumSymmetry = cfg.FfxDenoiserFloorLumSymmetry.value_or_default();
     _convDesc.FloorGrazingSharpness = cfg.FfxDenoiserFloorGrazingSharpness.value_or_default();
     _convDesc.FloorSoftMin = cfg.FfxDenoiserFloorSoftMin.value_or_default();
+    _convDesc.RoughnessExponent = cfg.FfxDenoiserRoughnessExponent.value_or_default();
+    _convDesc.HitDistScale = cfg.FfxDenoiserHitDistScale.value_or_default();
+    _convDesc.FloorSpecGuard = cfg.FfxDenoiserFloorSpecGuard.value_or_default();
+    _convDesc.SplitPriorStrength = cfg.FfxDenoiserSplitPrior.value_or_default();
+    _convDesc.RoughnessProbe = cfg.FfxDenoiserRoughnessProbe.value_or_default();
 
     if (s_isRoughnessPacked)
         _convDesc.Flags |= (uint32_t) FSRDConvFlags::IsRoughnessPacked;

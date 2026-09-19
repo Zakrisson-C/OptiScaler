@@ -64,6 +64,9 @@ class FSRDPreprocessor_Dx12
 
         DebugHitDistGate =      20 << 17 | Debug, // canUseHitDist ramp, separate from the buffer it scales
         DebugDenoiserFraction = 21 << 17 | Debug, // Share of the pixel routed to the denoiser vs the skip signal
+
+        DebugSignalDelta =      22 << 17 | Debug, // |demodSpecular - demodDiffuse|; blue everywhere = degenerate split
+        DebugRoughnessProbe =   23 << 17 | Debug, // White where roughness matches RoughnessProbe
     };
 
     enum class CompFlags : uint32_t
@@ -150,6 +153,22 @@ class FSRDPreprocessor_Dx12
 
         // Smoothing radius on the min(raw, floor) clamp in the packing shader. 0 = exact min().
         float FloorSoftMin;
+
+        // Re-encodes roughness before anything consumes it. 2.0 tests the squared-convention
+        // hypothesis (DLSS perceptual vs FSR-RR linear); 1.0 is bit-identical.
+        float RoughnessExponent;
+
+        // Scales the specular ray length handed to FSR-RR. 1.0 is bit-identical.
+        float HitDistScale;
+
+        // Pulls the floor off near-mirror surfaces. 0 is bit-identical.
+        float FloorSpecGuard;
+
+        // Biases the Mode 2 split toward specular on smooth surfaces. 0 is bit-identical.
+        float SplitPriorStrength;
+
+        // Target value for the roughness null-probe debug view.
+        float RoughnessProbe;
 
         uint32_t Flags; // Dynamic configuration flags. See: ConfigFlags
     };

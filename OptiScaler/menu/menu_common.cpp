@@ -3579,6 +3579,55 @@ bool MenuCommon::RenderMenu()
                                            "surface slope, where the depth gradient is least\n"
                                            "reliable. 0 disables.");
 
+                            {
+                                bool fsrDbg = config->FfxDenoiserFsrDebugViews.value_or_default();
+                                if (ImGui::Checkbox("FSR-RR Debug Views", &fsrDbg))
+                                    config->FfxDenoiserFsrDebugViews = fsrDbg;
+                                ShowHelpMarker("Enables FSR-RR's own debug views\n"
+                                               "(Virtual Hit Pos, View Centered Pos, Motion Vectors Z).\n"
+                                               "Needs a denoiser context recreate to take effect.");
+
+                                int vp = config->FfxDenoiserFsrDebugViewport.value_or_default();
+                                if (ImGui::SliderInt("FSR-RR Debug Viewport", &vp, -1, 11))
+                                    config->FfxDenoiserFsrDebugViewport = vp;
+                                ShowHelpMarker("-1 = tiled overview of every viewport.\n"
+                                               "0-11 = that viewport full screen.");
+                            }
+
+                            if (float v = config->FfxDenoiserRoughnessExponent.value_or_default();
+                                ImGui::SliderFloat("Roughness Exponent", &v, 0.5f, 3.0f))
+                                config->FfxDenoiserRoughnessExponent = v;
+                            ShowHelpMarker("Re-encodes roughness. 1.0 = unchanged.\n"
+                                           "2.0 tests DLSS-perceptual vs FSR-linear.\n"
+                                           "Judge on puddles and clean car paint.");
+
+                            if (float v = config->FfxDenoiserHitDistScale.value_or_default();
+                                ImGui::SliderFloat("Hit Distance Scale", &v, 0.01f, 100.0f,
+                                                   "%.3f", ImGuiSliderFlags_Logarithmic))
+                                config->FfxDenoiserHitDistScale = v;
+                            ShowHelpMarker("Scales specular ray length. 1.0 = unchanged.\n"
+                                           "Confirm units with Virtual Hit Pos first.");
+
+                            if (float v = config->FfxDenoiserRoughnessProbe.value_or_default();
+                                ImGui::SliderFloat("Roughness Probe", &v, 0.0f, 1.0f))
+                                config->FfxDenoiserRoughnessProbe = v;
+                            ShowHelpMarker("Target for the RoughnessProbe debug view.\n"
+                                           "Surfaces go white where roughness matches.");
+
+                            if (float v = config->FfxDenoiserFloorSpecGuard.value_or_default();
+                                ImGui::SliderFloat("Floor Specular Guard", &v, 0, 1))
+                                config->FfxDenoiserFloorSpecGuard = v;
+                            ShowHelpMarker("Pulls the floor off near-mirror surfaces so\n"
+                                           "reflections stop being routed through SkipSignal\n"
+                                           "permanently blurred. 0 = unchanged.");
+
+                            if (float v = config->FfxDenoiserSplitPrior.value_or_default();
+                                ImGui::SliderFloat("Split Prior", &v, 0, 1))
+                                config->FfxDenoiserSplitPrior = v;
+                            ShowHelpMarker("Biases the Mode 2 split toward specular on smooth\n"
+                                           "surfaces. Leave at 0 until SignalDelta confirms\n"
+                                           "the split is degenerate.");
+
                             if (float v = config->FfxDenoiserFloorSoftMin.value_or_default();
                                 ImGui::SliderFloat("Floor Soft Min", &v, 0, 0.1f, "%.4f"))
                                 config->FfxDenoiserFloorSoftMin = v;

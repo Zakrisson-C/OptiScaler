@@ -164,7 +164,14 @@ namespace FSRD
 
             float BiasMaskStrength; // Scales InBiasMask when routing pixels into the floor
             float FloorSoftMin;     // Smoothing radius on the floor/raw clamp. 0 = exact min()
-            float _Padding[2];
+
+            float RoughnessExponent;   // Re-encodes roughness. 1.0 = bit-identical
+            float HitDistScale;        // Scales specular ray length. 1.0 = bit-identical
+            float FloorSpecGuard;      // Pulls the floor off mirrors. 0 = bit-identical
+            float SplitPriorStrength;  // Biases the Mode 2 split. 0 = bit-identical
+            float RoughnessProbe;      // Target for the roughness null-probe debug view
+
+            float _Padding;
         };
 
         union Input

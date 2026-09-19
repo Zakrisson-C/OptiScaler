@@ -54,6 +54,9 @@ static const uint2 s_ThreadGroupSize = uint2(THREAD_GROUP_SIZE_X, THREAD_GROUP_S
 #define FLAGS_DEBUG_HIT_DIST_GATE       (20 << 17 | FLAGS_DEBUG)
 #define FLAGS_DEBUG_DENOISER_FRACTION   (21 << 17 | FLAGS_DEBUG)
 
+#define FLAGS_DEBUG_SIGNAL_DELTA        (22 << 17 | FLAGS_DEBUG)
+#define FLAGS_DEBUG_ROUGHNESS_PROBE     (23 << 17 | FLAGS_DEBUG)
+
 // DLSS-RR Inputs
 Texture2D<half3> InColor : register(t0); // RGB - NVSDK_NGX_Parameter_Color
 Texture2D<float> InDepth : register(t1); // R - NVSDK_NGX_Parameter_Depth - hardware or linear - inverted or not
@@ -106,7 +109,27 @@ cbuffer CB_Packing : register(b0)
     // Smoothing radius on the floor/raw clamp. 0 reproduces the exact min().
     float FloorSoftMin;
 
-    float2 _Padding;
+    // Re-encodes roughness before anything consumes it. DLSS supplies the perceptual
+    // parameter (its spec passes roughness^2 into EnvBRDFApprox2, so alpha = roughness^2)
+    // while FSR-RR documents normals.B as linear roughness, and nothing converts between
+    // them. 2.0 tests the squared-convention hypothesis; 1.0 is bit-identical to before.
+    float RoughnessExponent;
+
+    // Scales the specular ray length handed to FSR-RR. Units are unverified - a normalised
+    // [0,1] hit distance arriving where world units are expected would collapse the virtual
+    // image onto the surface. 1.0 is bit-identical.
+    float HitDistScale;
+
+    // Pulls the floor off near-mirror surfaces. 0 is bit-identical.
+    float FloorSpecGuard;
+
+    // Biases the Mode 2 split toward specular on smooth surfaces. 0 is bit-identical.
+    float SplitPriorStrength;
+
+    // Target value for the roughness null-probe debug view.
+    float RoughnessProbe;
+
+    float _Padding;
 };
 
 bool IsSet(uint mask) { return (Flags & mask) == mask; }
@@ -175,6 +198,12 @@ void CSMain(uint3 groupID : SV_GroupID, uint3 gtID : SV_GroupThreadID)
     specReflectance.rgb = max(specReflectance.rgb, 1e-4f);
     diffAlbedo.rgb = max(diffAlbedo.rgb, 1e-4f);
     
+    // Surface roughness, read here because the floor guard below needs it.
+    //
+    // Everything downstream consumes this single value, so the exponent is applied once.
+    const float rawRoughness = IsSet(FLAGS_PACKED_ROUGHNESS) ? InNormals[px].a : InRoughness[px];
+    const float surfaceRoughness = saturate(pow(max(rawRoughness, 1e-5f), RoughnessExponent));
+
     // Denoiser input color and floor residual
     const float3 rawColor = GetSafeFP16(InColor[px].rgb);
     float4 floorColor = InFloorColor[px];  
@@ -192,6 +221,17 @@ void CSMain(uint3 groupID : SV_GroupID, uint3 gtID : SV_GroupThreadID)
     // Clamp floor to minimum and blend in raw values where similar to preserve microcontrast.
     const float floorSimilarity = GetRelativeSimilarity(floorLuma, rawLuma, similarityThreshold);
     floorColor.rgb = FloorIsolation * lerp(floorColor.rgb, rawColor, saturate(floorSimilarity));
+
+    // Specular guard.
+    //
+    // The floor exists to capture stable raster lighting. A mirror is spatially smooth,
+    // which is what the stability heuristic actually measures, but it is not view-stable at
+    // all - so reflected content gets captured and returned through SkipSignal after five
+    // a-trous passes at stride up to 16, permanently blurred and never denoised. Reflected
+    // content is confirmed present in FloorColor on the Type-66. The usual cost of pulling
+    // the floor off a surface - imprinting returning - is smallest precisely here, because a
+    // polished panel's albedo is near-uniform.
+    floorColor.rgb *= lerp(1.0f, smoothstep(0.05f, 0.25f, surfaceRoughness), FloorSpecGuard);
 
     // Transparency / bias mask routing
     //
@@ -238,7 +278,7 @@ void CSMain(uint3 groupID : SV_GroupID, uint3 gtID : SV_GroupThreadID)
         // DLSS-RR provides 3D normals
         // Linear roughness optionally included in the A channel, or in a separate single-channel 
         // buffer (InRoughness).
-        float roughness = IsSet(FLAGS_PACKED_ROUGHNESS) ? worldSurfaceNormal.a : InRoughness[px];
+        float roughness = surfaceRoughness;
         roughness *= (1.0f - isEmissive);
         
         // Output: RG=OctNormal, B=Roughness, A=MaterialID
@@ -262,6 +302,7 @@ void CSMain(uint3 groupID : SV_GroupID, uint3 gtID : SV_GroupThreadID)
         half3 demodColor = 0.0f;
         float3 fusedAlbedo = 0.0f;
         float demodGain = 0.0f;
+        float3 signalDelta = 0.0f;
 
         [branch]
         if (IsSet(FLAGS_MODE_2_SIGNAL)) // Primary radiance packing - Mode 2 Signal
@@ -277,7 +318,19 @@ void CSMain(uint3 groupID : SV_GroupID, uint3 gtID : SV_GroupThreadID)
             const float3 specFraction = specWeight * rcp(max(totalWeight, kMinReflectance));
             const float3 isSplitValid = smoothstep(0.5f * kMinReflectance, kMinReflectance, totalWeight);
 
-            const float3 specularColor = denoiserColor * (specFraction * isSplitValid);
+            // Split prior - CONTINGENT, leave at 0 until the signal-delta view confirms.
+            //
+            // The reflectance-ratio split is exactly the assumption L_diffuse == L_specular:
+            // C/(A_d + A_s) is a weighted average of the two lighting terms whose weights
+            // track albedo, so wherever albedo varies AND the two lighting terms differ, the
+            // albedo pattern survives the division. That is the vehicle-livery residue seen
+            // in OutRadiance. Biasing the split toward specular on smooth surfaces is still a
+            // guess - one equation, two unknowns - but a better motivated one. It never
+            // pushes below what the reflectance ratio already says.
+            const float3 priorFraction = max(specFraction, SoftBelow(roughness, 0.35f, 0.20f).xxx);
+            const float3 biasedFraction = lerp(specFraction, priorFraction, SplitPriorStrength);
+
+            const float3 specularColor = denoiserColor * (biasedFraction * isSplitValid);
             const float3 diffuseColor = denoiserColor - specularColor;
 
             // Demodulate against a floored divisor. The remodulation below still uses the
@@ -290,6 +343,7 @@ void CSMain(uint3 groupID : SV_GroupID, uint3 gtID : SV_GroupThreadID)
             half3 demodDiffuse = GetSafeFP16(diffuseColor / diffDenom);
 
             demodGain = rcp(min(GetLuminance(specDenom), GetLuminance(diffDenom)));
+            signalDelta = abs(float3(demodSpecular) - float3(demodDiffuse));
 
             // Anything that can't survive modulation and clamping should be skipped
             const float3 remodColor = (demodSpecular * specReflectance.rgb) + (demodDiffuse * diffAlbedo.rgb);
@@ -311,7 +365,7 @@ void CSMain(uint3 groupID : SV_GroupID, uint3 gtID : SV_GroupThreadID)
             const float canUseHitDist = SoftBelow(roughness, 0.30f, 0.15f)
                                       * (1.0f - isEmissive)
                                       * (1.0f - biasWeight);
-            hitDist = GetSafeFP16(InSpecHitDist[px] * canUseHitDist);
+            hitDist = GetSafeFP16(InSpecHitDist[px] * HitDistScale * canUseHitDist);
             dbgHitGate = canUseHitDist;
             
             [branch]
@@ -480,6 +534,23 @@ void CSMain(uint3 groupID : SV_GroupID, uint3 gtID : SV_GroupThreadID)
                     debugColor = TurboColormap(saturate(log2(max(demodGain, 1.0f)) * (1.0f / 7.0f)));
                     break;
                 
+                // Mode 2 split degeneracy test. Working the algebra through gives
+                // demodSpecular == demodDiffuse == C/(spec+diff), i.e. the split conveys
+                // nothing. Uniform deep blue confirms. Faint rounding noise is expected from
+                // the FP16 reciprocal/multiply/divide; structure that tracks scene content is
+                // what refutes it.
+                case FLAGS_DEBUG_SIGNAL_DELTA:
+                    debugColor = TurboColormap(saturate(GetLuminance(signalDelta) * 100.0f));
+                    break;
+
+                // Roughness null probe: white where roughness matches RoughnessProbe. Reads
+                // out real values through any display transfer, which a greyscale ramp cannot
+                // - the squared-convention hypothesis is a power function and so is the
+                // display transfer, so they are otherwise perfectly confounded.
+                case FLAGS_DEBUG_ROUGHNESS_PROBE:
+                    debugColor = 1.0f - saturate(abs(surfaceRoughness - RoughnessProbe) * 50.0f);
+                    break;
+
                 default:
                     debugColor = demodColor;
                     break;
