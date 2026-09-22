@@ -34,7 +34,9 @@ DECLARE_LDS_ARRAY_2D(half4, g_DenoisedColor, KERNEL_SIZE);
 // Feature Flags
 #define FLAGS_RAW_SOURCE_BLIT           (1 << 0)
 #define FLAGS_SCALE_SRC                 (1 << 1)
-#define FLAGS_MODE_2_SIGNAL             (1 << 2)
+// FLAGS_MODE_2_SIGNAL (1 << 2) removed (transplant, 22 Sep): the split-signal blend below is now
+// unconditional - denoiser 1.2 has no combined-signal shape left to select away from. Found by
+// reading this file fresh this pass; it wasn't in the transplant plan's original §6f scope list.
 
 // Debug Flags
 #define FLAGS_DEBUG                     (1 << 16)
@@ -46,11 +48,11 @@ DECLARE_LDS_ARRAY_2D(half4, g_DenoisedColor, KERNEL_SIZE);
 #define FLAGS_DEBUG_SPECULAR_COLOR      (4 << 17 | FLAGS_DEBUG)
 #define FLAGS_DEBUG_DIFFUSE_COLOR       (5 << 17 | FLAGS_DEBUG)
 
-// Mode 1/2 Signal
-Texture2D<half4> InDenoisedSignal1 : register(t0); // Fused or specular denoiser output
-Texture2D<half4> InAlbedo1 : register(t1); // Fused or specular albedo
+// Specular signal
+Texture2D<half4> InDenoisedSignal1 : register(t0); // Specular denoiser output
+Texture2D<half4> InAlbedo1 : register(t1); // Specular albedo
 
-// Mode 2 Signal
+// Diffuse signal
 Texture2D<half4> InDenoisedSignal2 : register(t2); // Diffuse denoiser output
 Texture2D<half4> InAlbedo2 : register(t3); // Diffuse albedo
 
@@ -172,22 +174,18 @@ void PopulateSharedMemory(const uint2 groupID, const int2 gtID)
             const int2 px = clamp(pxOrigin + smID, int2(0, 0), maxBounds);
             half3 denoisedColor;
             half3 totalAlbedo;
-            
-            [branch]
-            if (IsSet(FLAGS_MODE_2_SIGNAL))
+
+            // Transplant, 22 Sep: unconditional now - always blends both split signals. This was
+            // gated on FLAGS_MODE_2_SIGNAL; the Mode 1 (single-signal) else is removed outright,
+            // no successor in denoiser 1.2 (transplant plan §6e/6f).
             {
                 const float3 denoisedSpecColor = InDenoisedSignal1[px].rgb;
                 const float3 denoisedDiffColor = InDenoisedSignal2[px].rgb;
                 const float3 specReflectance = InAlbedo1[px].rgb;
                 const float3 diffAlbedo = InAlbedo2[px].rgb;
-                
+
                 totalAlbedo = GetSafeFP16(specReflectance + diffAlbedo);
                 denoisedColor = GetSafeFP16((denoisedSpecColor * specReflectance) + (denoisedDiffColor * diffAlbedo));
-            }
-            else
-            {
-                totalAlbedo = GetSafeFP16(InAlbedo1[px].rgb);
-                denoisedColor = GetSafeFP16(InDenoisedSignal1[px].rgb) * totalAlbedo;
             }
             
             const half3 rawColor = GetSafeFP16(InRawColor[px].rgb);
@@ -285,11 +283,7 @@ void CSMain(uint3 groupID : SV_GroupID, uint3 gtID : SV_GroupThreadID)
                     OutColor[px] = half4(InDenoisedSignal2[px].rgb * InAlbedo2[px].rgb, 1.0f);
                     break;
                 default:
-                    if (IsSet(FLAGS_MODE_2_SIGNAL))
-                        OutColor[px] = half4(InDenoisedSignal1[px].rgb + InDenoisedSignal2[px].rgb, 1.0f);
-                    else
-                        OutColor[px] = half4(InDenoisedSignal1[px].rgb, 1.0f);
-                
+                    OutColor[px] = half4(InDenoisedSignal1[px].rgb + InDenoisedSignal2[px].rgb, 1.0f);
                     break;
             }    
         }

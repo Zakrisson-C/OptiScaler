@@ -18,7 +18,8 @@ static const uint2 s_ThreadGroupSize = uint2(THREAD_GROUP_SIZE_X, THREAD_GROUP_S
 #define FLAGS_NON_GAMMA_ALBEDO          (1 << 0)
 
 #define FLAGS_PACKED_ROUGHNESS          (1 << 2)
-#define FLAGS_MODE_2_SIGNAL             (1 << 3)
+// FLAGS_MODE_2_SIGNAL (1 << 3) removed (transplant, 22 Sep): the split-signal path below is now
+// unconditional - denoiser 1.2 has no combined-signal shape left to select away from.
 #define FLAGS_HAS_BIAS_MASK             (1 << 4)
 
 // Debug Flags
@@ -34,7 +35,8 @@ static const uint2 s_ThreadGroupSize = uint2(THREAD_GROUP_SIZE_X, THREAD_GROUP_S
 #define FLAGS_DEBUG_IN_SPEC_ALBEDO      (6 << 17 | FLAGS_DEBUG)
 
 // Outputs
-#define FLAGS_DEBUG_OUT_FUSED_ALBEDO    (7 << 17 | FLAGS_DEBUG)
+// FLAGS_DEBUG_OUT_FUSED_ALBEDO (7 << 17 | FLAGS_DEBUG) removed (transplant, 22 Sep): Mode-1-only,
+// fusedAlbedo no longer exists.
 #define FLAGS_DEBUG_OUT_LINEAR_DEPTH    (8 << 17 | FLAGS_DEBUG)
 #define FLAGS_DEBUG_OUT_MOTION          (9 << 17 | FLAGS_DEBUG)
 #define FLAGS_DEBUG_OUT_NORMALS         (10 << 17 | FLAGS_DEBUG)
@@ -70,14 +72,13 @@ Texture2D<half> InBiasMask : register(t8);
 
 Texture2D<half4> InFloorColor : register(t9);
 
-// FSR-RR - ffxDispatchDescDenoiserInput1Signal or ffxDispatchDescDenoiserInput2Signals
+// FSR-RR - ffxDispatchDescDenoiserIndirectSpecular / ffxDispatchDescDenoiserIndirectDiffuse
+// (transplant, 22 Sep: Mode 1's combined-signal shape removed, no successor in denoiser 1.2)
 //
-// Mode 1: RGB: Noisy fused lighting
-// Mode 2: RGB: Noisy specular lighting A: Specular Ray Length
-RWTexture2D<half4> OutSignal1 : register(u0); 
+// RGB: Noisy specular lighting A: Specular Ray Length
+RWTexture2D<half4> OutSignal1 : register(u0);
 
-// Mode 1: RGB Fused Albedo: max(specularAlbedo, diffuseAlbedo)
-// Mode 2: RGB: Noisy diffuse lighting for Mode 2
+// RGB: Noisy diffuse lighting
 RWTexture2D<half4> OutSignal2 : register(u1);
 
 // ffxDispatchDescDenoiser
@@ -312,12 +313,12 @@ void CSMain(uint3 groupID : SV_GroupID, uint3 gtID : SV_GroupThreadID)
         half hitDist = 0.0f;
         float dbgHitGate = 0.0f;
         half3 demodColor = 0.0f;
-        float3 fusedAlbedo = 0.0f;
         float demodGain = 0.0f;
         float3 signalDelta = 0.0f;
 
-        [branch]
-        if (IsSet(FLAGS_MODE_2_SIGNAL)) // Primary radiance packing - Mode 2 Signal
+        // Transplant, 22 Sep: unconditional now - this was the Mode 2 (split signal) branch.
+        // Mode 1's combined-signal packing (the old else, fusedAlbedo and all) is removed
+        // outright: denoiser 1.2 has no successor for it (transplant plan §6e/6f).
         {
             const float3 specWeight = saturate(specReflectance.rgb);
             const float3 diffWeight = saturate(diffAlbedo.rgb);
@@ -389,30 +390,6 @@ void CSMain(uint3 groupID : SV_GroupID, uint3 gtID : SV_GroupThreadID)
             else
                 demodColor = demodDiffuse + demodSpecular;
         }
-        else // Primary radiance packing - Mode 1 Signal
-        {           
-            fusedAlbedo = max(specReflectance.rgb, diffAlbedo.rgb);
-
-            // Same floored divisor as Mode 2, for the same reason. Remodulation still uses
-            // the true fused albedo so the residual path stays energy conserving.
-            const float3 fusedDenom = max(fusedAlbedo.rgb, kMinReflectance);
-            demodColor = GetSafeFP16(denoiserColor / fusedDenom);
-            demodGain = rcp(GetLuminance(fusedDenom));
-
-            const float3 residual = max(0.0f, denoiserColor - (demodColor * fusedAlbedo.rgb));
-            floorColor.rgb += residual;
-            
-            [branch]
-            if (!IsSet(FLAGS_NON_GAMMA_ALBEDO))
-                fusedAlbedo = sqrt(fusedAlbedo);
-            
-            [branch]
-            if (!IsSet(FLAGS_DEBUG))
-            {
-                OutSignal1[px] = half4(demodColor, hitDist);
-                OutSignal2[px] = half4(GetSafeFP16(fusedAlbedo), 0.0f);
-            }
-        }        
 
         // May be for better perceptual encoding efficiency in some configurations
         [branch]
@@ -452,8 +429,6 @@ void CSMain(uint3 groupID : SV_GroupID, uint3 gtID : SV_GroupThreadID)
                 case FLAGS_DEBUG_HIT_DIST_GATE:
                     // The canUseHitDist ramp itself, separated from the buffer it scales.
                     // Blue = closed (specular reprojects with the surface), red = open.
-                    // Mode 1 never assigns it, so a uniformly blue frame in Mode 1 is
-                    // expected rather than a fault.
                     debugColor = TurboColormap(dbgHitGate);
                     break;
 
@@ -493,10 +468,8 @@ void CSMain(uint3 groupID : SV_GroupID, uint3 gtID : SV_GroupThreadID)
                     debugColor = InSpecAlbedo[px];
                     break;
                 // Outputs
-                case FLAGS_DEBUG_OUT_FUSED_ALBEDO:
-                    debugColor = fusedAlbedo.rgb;
-                    break;
-                
+                // FLAGS_DEBUG_OUT_FUSED_ALBEDO case removed (transplant, 22 Sep): Mode-1-only,
+                // fusedAlbedo no longer exists.
                 case FLAGS_DEBUG_OUT_LINEAR_DEPTH:
                     // Same wrap bug as the hit distance view; same monotone remap.
                     debugColor = TurboColormap(log2(1.0f + viewSpacePos.z) * (1.0f / 11.0f));

@@ -196,6 +196,12 @@ enum class DebugModes : uint64_t
     ConversionDebug = FSRDConvFlags::Debug,
     ConversionDebugMask = FSRDConvFlags::DebugModeMask,
 
+    // Not Mode-1-specific despite living on the same struct as the old fused-radiance concept:
+    // this is "Debug flag set, no submode selected" (value == Debug itself), which the shader's
+    // switch(GetDebugMode()) default case reads as "show combined denoised radiance" - demodColor
+    // is populated by the split-signal (Mode 2) path too, just via a different formula. Confirmed
+    // by reading FSRDInputConv.hlsl fresh this pass rather than trusting the earlier guess that
+    // this was Mode-1-only (transplant plan §6f originally mislabeled it - corrected here).
     OutRadiance = FSRDConvFlags::DebugOutRadiance,
 
     InSpecHitDist = FSRDConvFlags::DebugInSpecHitDist,
@@ -205,7 +211,10 @@ enum class DebugModes : uint64_t
     InDiffAlbedo = FSRDConvFlags::DebugInDiffAlbedo,
     InSpecAlbedo = FSRDConvFlags::DebugInSpecAlbedo,
 
-    OutFusedAlbedo = FSRDConvFlags::DebugOutFusedAlbedo,
+    // OutFusedAlbedo removed (transplant, 22 Sep): genuinely Mode-1-only - fusedAlbedo is never
+    // assigned outside the removed Mode 1 branch in FSRDInputConv.hlsl, so this view would read
+    // permanent black once Mode 1 is gone. Not repointed at anything; there's no equivalent
+    // concept in the split-signal shape.
     OutLinearDepth = FSRDConvFlags::DebugOutLinearDepth,
     OutMotion = FSRDConvFlags::DebugOutMotion,
     OutNormals = FSRDConvFlags::DebugOutNormals,
@@ -277,7 +286,6 @@ constexpr auto kDebugModes = std::to_array<ModeNamePair>(
     { "InSpecAlbedo", (uint64_t) DebugModes::InSpecAlbedo },
 
     { "OutRadiance", (uint64_t) DebugModes::OutRadiance },
-    { "OutFusedAlbedo", (uint64_t) DebugModes::OutFusedAlbedo },
     { "OutLinearDepth", (uint64_t) DebugModes::OutLinearDepth },
     { "OutMotionVectors", (uint64_t) DebugModes::OutMotion },
     { "OutNormals", (uint64_t) DebugModes::OutNormals },
@@ -304,24 +312,25 @@ constexpr auto kDebugModes = std::to_array<ModeNamePair>(
 });
 
 
-constexpr auto kDenoiserModes = std::to_array<std::pair<const char*, int>>(
-{ 
-    { "Mode 2", 0 }, 
-    { "Mode 1", 1 }, 
-});
-
 bool FSRDFeatureDx12::s_isHWDepth = false;
 bool FSRDFeatureDx12::s_isRoughnessPacked = false;
 
-FSRDFeatureDx12::FSRDFeatureDx12(uint32_t InHandleId, NVSDK_NGX_Parameter* InParameters) : 
-    FSR31FeatureDx12(InHandleId, InParameters),
-    IFeature(InHandleId, SetParameters(InParameters)),  
-    _pDenoiserCtx(nullptr), 
+FSRDFeatureDx12::FSRDFeatureDx12(uint32_t InHandleId, NVSDK_NGX_Parameter* InParameters) :
+    FFXFeatureDx12(InHandleId, InParameters),
+    IFeature(InHandleId, InParameters),
+    _pDenoiserCtx(nullptr),
     _denoiserCtxDesc({}),
-    _denoiserSettings({}), 
-    _convDesc({}),
-    _isMode2(false)
+    _denoiserSettings({}),
+    _convDesc({})
 {
+    // FFXFeatureDx12::SetParameters() is private, so its call in FFXFeatureDx12's own constructor
+    // (chained through IFeature's mem-initializer) never runs for us: IFeature is a virtual base
+    // shared by FFXFeature and IFeature_Dx12, so as the most-derived class WE are responsible for
+    // initializing it directly, which means FFXFeatureDx12's own IFeature(..., SetParameters(...))
+    // mem-initializer - argument expression included - is skipped entirely, not just its result
+    // discarded. Replicate SetParameters()'s one side effect here instead.
+    InParameters->Set("OptiScaler.SupportsUpscaleSize", true);
+
     _moduleLoaded = FfxApiProxy::IsDenoiserReady();
 
     if (_moduleLoaded)
@@ -338,12 +347,12 @@ FSRDFeatureDx12::~FSRDFeatureDx12()
     DestroyDenoiserContext();
 }
 
-bool FSRDFeatureDx12::InitFSR3(const NVSDK_NGX_Parameter* InParameters)
+bool FSRDFeatureDx12::InitFFX(const NVSDK_NGX_Parameter* InParameters)
 {
     LOG_FUNC();
 
     // Init upscaler first - borrow some init boilerplate and some cfg
-    if (FSR31FeatureDx12::InitFSR3(InParameters))
+    if (FFXFeatureDx12::InitFFX(InParameters))
     {
         SetInit(false);
 
@@ -382,20 +391,7 @@ bool FSRDFeatureDx12::CreateDenoiserContext()
     state.ffxDenoiserUpscalerVersion = Version();
     parse_version(state.ffxDenoiserVersionNames[cfg.FfxDenoiserIndex.value_or_default()]);
 
-    // Get current mode and populate mode map
-    _isMode2 = cfg.FfxDenoiserMode.value_or_default() == 0;
-    state.ffxDenoiserModes.resize(kDenoiserModes.size());
-    state.ffxDenoiserModeNames.reserve(kDenoiserModes.size());
-    state.ffxDenoiserModes.clear();
-    state.ffxDenoiserModeNames.clear();
-
-    for (const auto& mode : kDenoiserModes)
-    {
-        state.ffxDenoiserModes.push_back(mode.second);
-        state.ffxDenoiserModeNames.emplace(mode.second, mode.first);
-    }
-
-    ffxOverrideVersion vidOverride = 
+    ffxOverrideVersion vidOverride =
     {
         .header = { .type = FFX_API_DESC_TYPE_OVERRIDE_VERSION },
         .versionId = state.ffxDenoiserVersionIds[cfg.FfxDenoiserIndex.value_or_default()]
@@ -412,18 +408,23 @@ bool FSRDFeatureDx12::CreateDenoiserContext()
         .device = Device
     };    
     // Chain: ContextDesc -> BackendDesc -> OverrideVersion
-    // Composited radiance with fused albedo without a dominant light source
-    _denoiserCtxDesc = 
+    // Phase 3 note (transplant, 22 Sep): denoiser 1.2 has no .mode field - replaced by
+    // signalFlags/checkerboardSignalFlags bitmasks (transplant plan §6e). Hardcoded to the split
+    // indirect diffuse+specular signals per §6f (Mode 1 removed outright, Chris's call - the SDK
+    // no longer offers a combined-signal option to select). No checkerboard reconstruction is
+    // used anywhere in this shim.
+    _denoiserCtxDesc =
     {
-        .header = 
-        { 
+        .header =
+        {
             .type = FFX_API_CREATE_CONTEXT_DESC_TYPE_DENOISER,
             // Chain backend desc into context desc
             .pNext = &backendDesc.header
         },
         .version = FFX_DENOISER_VERSION,
         .maxRenderSize = { RenderWidth(), RenderHeight() },
-        .mode = uint32_t(_isMode2 ? FFX_DENOISER_MODE_2_SIGNALS : FFX_DENOISER_MODE_1_SIGNAL),
+        .signalFlags = FFX_DENOISER_SIGNAL_INDIRECT_DIFFUSE | FFX_DENOISER_SIGNAL_INDIRECT_SPECULAR,
+        .checkerboardSignalFlags = 0,
         .flags = 0
     };
 
@@ -455,7 +456,7 @@ bool FSRDFeatureDx12::CreateDenoiserContext()
     SetDefaultConfiguration();
 
     // Create DLSS-RR to FSR-RR input converter
-    FSRDConvShader = std::make_unique<FSRDPreprocessor_Dx12>("FSRD Converter", Device, _isMode2);
+    FSRDConvShader = std::make_unique<FSRDPreprocessor_Dx12>("FSRD Converter", Device);
 
     if (!FSRDConvShader->IsInit())
         return false;
@@ -539,7 +540,7 @@ void FSRDFeatureDx12::UpdateSize()
     }
 }
 
-bool FSRDFeatureDx12::Evaluate(ID3D12GraphicsCommandList* InCommandList, NVSDK_NGX_Parameter* InParameters) 
+bool FSRDFeatureDx12::EvaluateInternal(ID3D12GraphicsCommandList* InCommandList, NVSDK_NGX_Parameter* InParameters)
 {
     LOG_FUNC();
 
@@ -559,17 +560,17 @@ bool FSRDFeatureDx12::Evaluate(ID3D12GraphicsCommandList* InCommandList, NVSDK_N
     const bool hasAnyDebug = (dbgMode != DebugModes::None);
 
     // Denoise is bypassed if we are debugging something OTHER than the final outputs
-    const bool isDenoiseBypassed = !isFfxDebug && !isDebugComp && 
+    const bool isDenoiseBypassed = !isFfxDebug && !isDebugComp &&
         hasAnyDebug && dbgMode != DebugModes::DenoiserOutput && dbgMode != DebugModes::UpscalerBypass;
 
     // Upscale is bypassed if we are in a debug mode that isn't the DenoiserBypass (final raw)
     const bool isUpscaleBypassed = hasAnyDebug && dbgMode != DebugModes::DenoiserBypass;
 
-    // Validate helper features
-    if (!RCAS->IsInit())
-        cfg.RcasEnabled.set_volatile_value(false);
-    if (!OutputScaler->IsInit())
-        cfg.OutputScalingEnabled.set_volatile_value(false);
+    // Phase 2 note (transplant, 22 Sep): the old RCAS->IsInit()/OutputScaler->IsInit() guards that
+    // used to live here are gone - IFeature_Dx12::Evaluate() (the fixed entry point that calls this
+    // EvaluateInternal() override) now runs those same IsInit() checks itself, generically, before
+    // deciding whether to build its RCAS/OutputScaling/Magnifier post-process pipeline. Nothing to
+    // replicate here.
 
     _isInReset = false;
 
@@ -577,23 +578,17 @@ bool FSRDFeatureDx12::Evaluate(ID3D12GraphicsCommandList* InCommandList, NVSDK_N
         _isInReset = value > 0;
 
     // Denoiser start
-    ffxDispatchDescDenoiserInput1Signal mode1Signal = {};
-    ffxDispatchDescDenoiserInput2Signals mode2Signal = {};
+    ffxDispatchDescDenoiserIndirectDiffuse indirectDiffuseSignal = {};
+    ffxDispatchDescDenoiserIndirectSpecular indirectSpecularSignal = {};
     ffxDispatchDescDenoiser denoiserDesc = {};
     bool isDenoiserReady = false;
 
-    // Pull configuration and input buffers for DLSS-RR from the param table, convert and 
+    // Pull configuration and input buffers for DLSS-RR from the param table, convert and
     // repack input buffers into intermediate FSR-RR input buffers, and configure descriptors.
-    if (_isMode2)
-    {
-        if (!PrepareDenoiserInput(InCommandList, *InParameters, denoiserDesc, mode2Signal))
-            return false;
-    }
-    else
-    {
-        if (!PrepareDenoiserInput(InCommandList, *InParameters, denoiserDesc, mode1Signal))
-            return false;
-    }
+    // Phase 3 note (transplant, 22 Sep): no more Mode 1 / Mode 2 branch here - denoiser 1.2 only
+    // has the split signal shape (transplant plan §6e/6f).
+    if (!PrepareDenoiserInput(InCommandList, *InParameters, denoiserDesc, indirectDiffuseSignal, indirectSpecularSignal))
+        return false;
 
     // Dispatch denoiser
     if (!isDenoiseBypassed)
@@ -620,9 +615,11 @@ bool FSRDFeatureDx12::Evaluate(ID3D12GraphicsCommandList* InCommandList, NVSDK_N
             if (debugViewport >= int(FFX_API_DENOISER_DEBUG_VIEW_MAX_VIEWPORTS))
                 debugViewport = int(FFX_API_DENOISER_DEBUG_VIEW_MAX_VIEWPORTS) - 1;
 
-            dispatchDebugView = 
-            { 
-                .header = { .type = FFX_API_DISPATCH_DESC_DEBUG_VIEW_TYPE_DENOISER }, 
+            dispatchDebugView =
+            {
+                // Word-order swap from 1.1's FFX_API_DISPATCH_DESC_DEBUG_VIEW_TYPE_DENOISER, not a
+                // semantic change (transplant plan §6i).
+                .header = { .type = FFX_API_DISPATCH_DESC_TYPE_DENOISER_DEBUG_VIEW },
                 .output = ffxApiGetResourceDX12(dstTex, FFX_API_RESOURCE_STATE_UNORDERED_ACCESS),
                 .outputSize = { TargetWidth(), TargetHeight() },
                 // The named SDK views are viewports, not modes: the enum is only
@@ -659,30 +656,34 @@ bool FSRDFeatureDx12::Evaluate(ID3D12GraphicsCommandList* InCommandList, NVSDK_N
     // Upscaler start
     if (!isUpscaleBypassed)
     {
-        ffxDispatchDescUpscale upscalerDesc = {};
-
-        if (!PrepareUpscalerInput(InCommandList, inParams, upscalerDesc))
-            return false;
-
-        // Override upscaler config
+        // Phase 2 note (transplant, 22 Sep): there's no separate ffxDispatchDescUpscale left to
+        // build and hand off - FFXFeatureDx12::EvaluateInternal() builds its own internally from
+        // InParameters and dispatches in one call (it also derives cameraFovAngleVertical and
+        // frameTimeDelta itself from InParameters/config, so the old cross-assignment from
+        // denoiserDesc doesn't need porting either - denoiserDesc no longer carries those fields in
+        // 1.2 regardless, see the transplant plan §6g). Steer it onto the denoiser's composited
+        // output the same way IFeature_Dx12::Evaluate() itself steers NVSDK_NGX_Parameter_Output
+        // for its own post-process pipeline: substitute the parameter, call through, restore it.
+        // Resource barriers, RCAS/OutputScaler/Magnifier post-process and their IsInit() guards are
+        // all handled automatically now - the barriers inside this call, the rest by
+        // IFeature_Dx12::Evaluate() once it gets control back, gated on OUR return value below.
+        //
+        // KNOWN GAP, not fixed here: the old code gated its explicit PostProcess(...) call on the
+        // LOCAL isUpscalerReady result, but this function's own return statement (unchanged, a few
+        // lines down) is `isDenoiserReady || isDenoiseBypassed` - it never reflected upscaler
+        // success even in the original. IFeature_Dx12::Evaluate() now runs its post-process pipeline
+        // based on THAT return value, so a failed upscaler dispatch here no longer skips
+        // post-processing the way it used to (denoiser-only failures are unaffected: this function
+        // already returns false directly in that case, well before this point). Narrow edge case -
+        // flagged rather than silently changed, since fixing it means changing what this function's
+        // return communicates to its own caller, which is its own decision to make deliberately.
         if (isDenoiserReady)
-        {
-            upscalerDesc.color = ffxApiGetResourceDX12(FSRDConvShader->GetCompositionOutput());
-            upscalerDesc.cameraFovAngleVertical = denoiserDesc.cameraFovAngleVertical;
-            upscalerDesc.frameTimeDelta = denoiserDesc.deltaTime;
-        }
+            InParameters->Set(NVSDK_NGX_Parameter_Color, FSRDConvShader->GetCompositionOutput());
 
-        // Sets optional, configurable resource barriers
-        FSR31FeatureDx12::SetConfigurableBarriers(InCommandList);
+        FFXFeatureDx12::EvaluateInternal(InCommandList, InParameters);
 
-        bool isUpscalerReady = DispatchUpscaler(InCommandList, upscalerDesc);
-
-        // Post-Process
-        if (isUpscalerReady)
-            PostProcess(InCommandList, inParams, upscalerDesc);
-
-        // Cleanup
-        FSR31FeatureDx12::ResetConfigurableBarriers(InCommandList);
+        if (isDenoiserReady)
+            InParameters->Set(NVSDK_NGX_Parameter_Color, _convDesc.Resources.InColor);
     }
     else if (!isFfxDebug) // Debug visualization
     {
@@ -699,12 +700,7 @@ bool FSRDFeatureDx12::Evaluate(ID3D12GraphicsCommandList* InCommandList, NVSDK_N
         else if (dbgMode == DebugModes::RawColor)
             TryGetNGXVoidPointer(inParams, NVSDK_NGX_Parameter_Color, srcTex);
         else if (isDebugVis)
-        {
-            if (_isMode2)
-                srcTex = GetD3D12ResFromFFX(mode2Signal.specularRadiance.input);
-            else
-                srcTex = GetD3D12ResFromFFX(mode1Signal.radiance.input);
-        }
+            srcTex = GetD3D12ResFromFFX(indirectSpecularSignal.signal.input);
         else
             srcTex = FSRDConvShader->GetCompositionOutput();
 
@@ -723,65 +719,75 @@ bool FSRDFeatureDx12::Evaluate(ID3D12GraphicsCommandList* InCommandList, NVSDK_N
     return isDenoiserReady || isDenoiseBypassed;
 }
 
-template <typename SignalDescT>
 bool FSRDFeatureDx12::PrepareDenoiserInput(ID3D12GraphicsCommandList* InCommandList, const NVSDK_NGX_Parameter& inParams,
-    ffxDispatchDescDenoiser& dispatchDesc, SignalDescT& signalDesc)
+    ffxDispatchDescDenoiser& dispatchDesc, ffxDispatchDescDenoiserIndirectDiffuse& indirectDiffuseSignal,
+    ffxDispatchDescDenoiserIndirectSpecular& indirectSpecularSignal)
 {
-    const auto& cfg = *Config::Instance(); 
+    // cfg's only use here was the now-removed FSR-frame-time-delta resolution (see the comment
+    // below dispatchDesc's initializer) - dropped rather than left dangling. slData was already
+    // unused in this function before this pass; left as-is.
     const auto& slData = State::Instance().slLastConstants;
 
     // Gather DLSS-RR input buffers for conversion and repacking for FSR-RR
     if (!PrepareDenoiseConvInput(inParams))
-        return false;   
+        return false;
 
     if (!ConvertDenoiserBuffers(InCommandList))
         return false;
 
-    // Camera matrix - translation and rotation, from viewMatrix^-1
+    // Camera position, from viewMatrix^-1's translation column
     const XMFLOAT3 camPos = GetFloat3Column(_invViewMatrix, 3);
-    const XMVECTOR right = XMVector3Normalize(GetColumn(_invViewMatrix, 0));
-    const XMVECTOR up = XMVector3Normalize(GetColumn(_invViewMatrix, 1));
-
-    // FSR-RR requires left handed view matrices
-    XMVECTOR forward = XMVector3Normalize(GetColumn(_invViewMatrix, 2));
-    forward *= _isRightHanded ? -1.0f : 1.0f;
 
     // Pack dispatch configuration
-    dispatchDesc = 
+    //
+    // Phase 3 note (transplant, 22 Sep): 1.1's decomposed cameraRight/cameraUp/cameraForward +
+    // cameraAspectRatio/cameraNear/cameraFar/cameraFovAngleVertical fields don't exist in 1.2 -
+    // replaced wholesale by .view/.projection matrices set below, plus .linearDepthBounds (new -
+    // see the comment on it). deltaTime doesn't exist either, with no successor field anywhere on
+    // this struct in 1.2 - the old FSR-frame-time-delta resolution that used to feed it is removed
+    // below rather than ported, since it would have nothing left to write into (confirmed against
+    // the real 1.2 header, not assumed). Transplant plan §6g/§6h.
+    dispatchDesc =
     {
         .commandList = InCommandList,
         .motionVectorScale = { 1.0f, 1.0f, 1.0f },
         // Camera movement since last frame (PreviousPosition - CurrentPosition)
         .cameraPositionDelta = { (_lastCamPos.x - camPos.x), (_lastCamPos.y - camPos.y), (_lastCamPos.z - camPos.z) },
-        .cameraRight = GetFloat3FFX(right),
-        .cameraUp = GetFloat3FFX(up),
-        .cameraForward = GetFloat3FFX(forward),
-        .cameraAspectRatio = GetAspectRatioFromProjectionMatrix(_projMatrix),
-        .cameraNear = _convDesc.NearPlane,
-        .cameraFar = _convDesc.FarPlane,
-        .cameraFovAngleVertical = GetVertFovFromProjectionMatrixRad(_projMatrix),
-        .renderSize = { RenderWidth(), RenderHeight() }, 
+        // Absolute linear depth bounds - passthrough is enabled outside this range. Left
+        // zero-initialized, this silently disables the denoiser for the entire frame with no
+        // error (transplant plan §6h - the top silent hazard in this migration). Near/far are
+        // already in absolute linear-depth units (GetViewPlanes(), computed every frame in
+        // ConvertDenoiserBuffers() just above).
+        .linearDepthBounds = { .min = _convDesc.NearPlane, .max = _convDesc.FarPlane },
+        .renderSize = { RenderWidth(), RenderHeight() },
         .frameIndex = (uint32_t)_frameCount,
         .flags = FFX_DENOISER_DISPATCH_NON_GAMMA_ALBEDO
     };
 
-    // Populate resources and link signal header
-    FSRDConvShader->GetSignal(signalDesc, dispatchDesc);
-    
+    // World-to-view and (unjittered) view-to-projection matrices, direct from DirectXMath's own
+    // row-major/row-vector storage - the 1.2 header's doc comment confirms no transpose is needed
+    // here (unlike _convDesc's InvViewMatrix/InvProjMatrix/PrevViewMatrix, which DO transpose
+    // because those feed an HLSL constant buffer expecting column-major). FfxApiMatrix4x4 is 4
+    // contiguous FfxApiFloat4 rows - bit-identical layout to XMFLOAT4X4 - so this follows the same
+    // reinterpret_cast-into-XMStore idiom GetFloat3FFX() above already uses for the 3-component case.
+    //
+    // OPEN, not resolved here (transplant plan §6g): whether the _isRightHanded-conditional flip
+    // the old cameraForward basis vector used to get needs an equivalent at the matrix level.
+    // The header documents storage/multiplication convention but says nothing about handedness
+    // expectations, and this branch has a handedness-bug history - do not guess. Passed through
+    // unmodified; §8.3's Motion Vectors Z and View Centered Pos debug views cover this question.
+    XMStoreFloat4x4(reinterpret_cast<XMFLOAT4X4*>(&dispatchDesc.view), _viewMatrix);
+    XMStoreFloat4x4(reinterpret_cast<XMFLOAT4X4*>(&dispatchDesc.projection), _projMatrix);
+
+    // Populate resources and link signal headers: dispatchDesc -> indirectSpecularSignal ->
+    // indirectDiffuseSignal (see FSRDPreprocessor_Dx12::GetSignal).
+    FSRDConvShader->GetSignal(indirectDiffuseSignal, indirectSpecularSignal, dispatchDesc);
+
     if (_isInReset)
         dispatchDesc.flags |= FFX_DENOISER_DISPATCH_RESET;
 
     // Update camera position for next frame
     _lastCamPos = camPos;
-
-    if (!TryGetToggleableNGXParam(inParams, OptiKeys::FSR_FrameTimeDelta, cfg.FsrUseFsrInputValues, dispatchDesc.deltaTime))
-    {
-        if (inParams.Get(NVSDK_NGX_Parameter_FrameTimeDeltaInMsec, &dispatchDesc.deltaTime) !=
-                NVSDK_NGX_Result_Success || dispatchDesc.deltaTime < 1.0f)
-        {
-            dispatchDesc.deltaTime = (float)GetDeltaTime();
-        }
-    }
 
     // Motion Vector Scaling
     // Scaling must result in UV space vectors, unlike FSR/DLSS pixel space vectors

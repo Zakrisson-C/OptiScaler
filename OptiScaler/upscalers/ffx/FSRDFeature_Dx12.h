@@ -1,13 +1,29 @@
 #pragma once
-#include "FSR31Feature_Dx12.h"
+#include "FFXFeature_Dx12.h"
 #include "shaders/fsrd_preprocess/FSRDPreprocessor_Dx12.h"
 #include <DirectXMath.h>
 
 /**
  * @brief Unfied denoiser-upscaler utilising AMD FSR Ray Regeneration and Super Resolution with
- * DLSS-RR inputs. Extends FSR 3.1+ upscaler implementation.
+ * DLSS-RR inputs. Extends the FFX upscaler implementation (FSR 3.1+).
+ *
+ * Phase 2 note (transplant, 22 Sep): base class changed from FSR31FeatureDx12 (single inheritance)
+ * to FFXFeatureDx12 (public FFXFeature, public IFeature_Dx12 - split inheritance). Name() is
+ * dropped entirely: IFeature::Name() is non-virtual now (derives from GetUpscalerType(), which
+ * FFXFeatureDx12 locks `final` to Upscaler::FFX) so there is nothing left to override - the
+ * existing `_name = OptiTexts::FSR_RR_Name;` assignment in InitFFX (below) is untouched and still
+ * the right way to carry the FSR-RR display string. Evaluate() is renamed to EvaluateInternal():
+ * IFeature_Dx12::Evaluate() is now a fixed, non-overridable template-method entry point that runs
+ * the shared RCAS/OutputScaling/Magnifier post-process pipeline and GPU timing around whatever
+ * EvaluateInternal() does - see FSRDFeature_Dx12.cpp for how the old PrepareUpscalerInput /
+ * DispatchUpscaler / PostProcess / SetConfigurableBarriers calls collapse into one call to
+ * FFXFeatureDx12::EvaluateInternal().
+ *
+ * Phase 3 note (transplant, 22 Sep): denoiser 1.2 has no "Mode 1" (single combined signal) concept -
+ * see the transplant plan §6e/6f. Mode 1 is removed outright (Chris's call, not preserved as a
+ * preset); the shim now always dispatches the split indirect-diffuse/indirect-specular signals.
  */
-class FSRDFeatureDx12 : public FSR31FeatureDx12
+class FSRDFeatureDx12 : public FFXFeatureDx12
 {
   public:
     using FSRDConvDesc = FSRDPreprocessor_Dx12::ConversionDesc;
@@ -16,11 +32,9 @@ class FSRDFeatureDx12 : public FSR31FeatureDx12
 
     ~FSRDFeatureDx12();
 
-    feature_version Version() override { return FSR31FeatureDx12::Version(); }
+    feature_version Version() override { return FFXFeatureDx12::Version(); }
 
-    std::string Name() const override { return FSR31FeatureDx12::Name(); }
-
-    bool Evaluate(ID3D12GraphicsCommandList* InCommandList, NVSDK_NGX_Parameter* InParameters) override;
+    bool EvaluateInternal(ID3D12GraphicsCommandList* InCommandList, NVSDK_NGX_Parameter* InParameters) override;
 
   private:
 
@@ -60,7 +74,6 @@ class FSRDFeatureDx12 : public FSR31FeatureDx12
     ffxContext _pDenoiserCtx;
     ffxCreateContextDescDenoiser _denoiserCtxDesc;
     DenoiserConfiguration _denoiserSettings;
-    bool _isMode2;
 
     static bool s_isHWDepth;
     static bool s_isRoughnessPacked;
@@ -77,7 +90,7 @@ class FSRDFeatureDx12 : public FSR31FeatureDx12
 
     std::unique_ptr<FSRDPreprocessor_Dx12> FSRDConvShader;
 
-    bool InitFSR3(const NVSDK_NGX_Parameter* InParameters) override;
+    bool InitFFX(const NVSDK_NGX_Parameter* InParameters) override;
 
     bool CreateDenoiserContext();
 
@@ -90,10 +103,15 @@ class FSRDFeatureDx12 : public FSR31FeatureDx12
     /**
      * @brief Generates FFX denoiser configuration and input buffers from DLSS-RR inputs and NGX configurations.
      * Converts and repacks resources internally.
+     *
+     * Phase 3 note (transplant, 22 Sep): no longer templated over a Mode-1-vs-Mode-2 signal shape -
+     * denoiser 1.2 has no combined-signal concept to template over (see the transplant plan §6e/6f).
+     * Always populates both split signals, chained together into dispatchDesc.
      */
-    template<typename SignalDescT>
     bool PrepareDenoiserInput(ID3D12GraphicsCommandList* InCommandList, const NVSDK_NGX_Parameter& ngxParams,
-                              ffxDispatchDescDenoiser& dispatchDesc, SignalDescT& signalDesc);
+                              ffxDispatchDescDenoiser& dispatchDesc,
+                              ffxDispatchDescDenoiserIndirectDiffuse& indirectDiffuseSignal,
+                              ffxDispatchDescDenoiserIndirectSpecular& indirectSpecularSignal);
 
     /**
      * @brief Retrieves DLSS-RR inputs to populate the inputs for the interop layer in order to generate

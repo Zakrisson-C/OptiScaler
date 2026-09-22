@@ -10,8 +10,8 @@ struct ID3D12Device;
 struct ID3D12GraphicsCommandList;
 struct ID3D12Resource;
 
-struct ffxDispatchDescDenoiserInput1Signal;
-struct ffxDispatchDescDenoiserInput2Signals;
+struct ffxDispatchDescDenoiserIndirectDiffuse;
+struct ffxDispatchDescDenoiserIndirectSpecular;
 struct ffxDispatchDescDenoiser;
 
 /**
@@ -29,7 +29,9 @@ class FSRDPreprocessor_Dx12
         NonGammaAlbedo =        1 << 0, // If set, FFX_DENOISER_DISPATCH_NON_GAMMA_ALBEDO should ALSO be set
         IsDepthLinear =         1 << 1, // Interprets input depth as already linearized for view space calculations
         IsRoughnessPacked =     1 << 2, // Roughness = InNormals.A - NVSDK_NGX_DLSS_Roughness_Mode_Packed (Init param)
-        Mode2Signal =           1 << 3, // Enables mode 2 denoiser outputs with discrete diffuse and specular lighting
+        // Mode2Signal (1 << 3) removed (transplant, 22 Sep): denoiser 1.2 only has the split
+        // diffuse/specular signal shape, so the packing shader always takes what used to be the
+        // Mode 2 path now. Bit 3 deliberately left unused rather than renumbering HasBiasMask.
         HasBiasMask =           1 << 4, // InBiasMask holds a real DLSS bias-current-color mask
 
         Debug =                 1 << 16, // Denoiser and upscaler bypassed for debug out if this is set
@@ -44,7 +46,8 @@ class FSRDPreprocessor_Dx12
         DebugInDiffAlbedo =     5 << 17 | Debug,
         DebugInSpecAlbedo =     6 << 17 | Debug,
 
-        DebugOutFusedAlbedo =   7 << 17 | Debug,
+        // DebugOutFusedAlbedo (7 << 17 | Debug) removed (transplant, 22 Sep): Mode-1-only, would
+        // read permanent black with fusedAlbedo never assigned outside the removed Mode 1 branch.
         DebugOutLinearDepth =   8 << 17 | Debug,
         DebugOutMotion =        9 << 17 | Debug,
         DebugOutNormals =       10 << 17 | Debug,
@@ -74,7 +77,8 @@ class FSRDPreprocessor_Dx12
         None =                  0,
         RawSourceBlit =         1 << 0, // Bypass composition and write unmodified input
         ScaleSrc =              1 << 1, // Enable bilinear scaling to output
-        Mode2Signal =           1 << 2,
+        // Mode2Signal (1 << 2) removed (transplant, 22 Sep): the composition shader always blends
+        // both split signals now - see FSRDOutputComp.hlsl. Bit 2 deliberately left unused.
 
         Debug =                 1 << 16,
         DebugModeMask =         0xFF << 16,
@@ -188,7 +192,7 @@ class FSRDPreprocessor_Dx12
 
   public:
 
-    FSRDPreprocessor_Dx12(std::string_view name, ID3D12Device* pDev, bool isMode2);
+    FSRDPreprocessor_Dx12(std::string_view name, ID3D12Device* pDev);
 
     ~FSRDPreprocessor_Dx12();
 
@@ -221,18 +225,14 @@ class FSRDPreprocessor_Dx12
     bool DispatchConversion(ID3D12GraphicsCommandList* cmdList, const ConversionDesc& desc);
 
     /**
-     * @brief Configures input/output resources after input conversion for FSR-RR with Mode-1 fused inputs.
+     * @brief Configures input/output resources after input conversion for FSR-RR's split indirect
+     * diffuse/specular signals, and chains both into dispatchDesc.
      * Resources are transitioned to SRV state and valid until the next conversion or composition dispatch.
      * Must be re-acquired after each dispatch (lifetime managed internally).
      */
-    void GetSignal(ffxDispatchDescDenoiserInput1Signal& signalDesc, ffxDispatchDescDenoiser& dispatchDesc) const;
-
-    /**
-     * @brief Configures input/output resources after input conversion for FSR-RR with Mode-2 discrete diffuse/specular color.
-     * Resources are transitioned to SRV state and valid until the next conversion or composition dispatch.
-     * Must be re-acquired after each dispatch (lifetime managed internally).
-     */
-    void GetSignal(ffxDispatchDescDenoiserInput2Signals& signalDesc, ffxDispatchDescDenoiser& dispatchDesc) const;
+    void GetSignal(ffxDispatchDescDenoiserIndirectDiffuse& indirectDiffuseSignal,
+                   ffxDispatchDescDenoiserIndirectSpecular& indirectSpecularSignal,
+                   ffxDispatchDescDenoiser& dispatchDesc) const;
 
     /**
      * @brief Composes the denoised radiance from FSR-RR with the skip signal previously generated 
