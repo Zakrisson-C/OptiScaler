@@ -390,6 +390,8 @@ copy NUL "$(SolutionDir)x64\Release\a\!! EXTRACT ALL FILES TO GAME FOLDER !!" /Y
     <ClInclude Include="inputs\XeSS_Dx11.h" />
     <ClInclude Include="MathUtils.h" />
     <ClInclude Include="OptiTypes.h" />
+    <!-- Transplant, 22 Sep (plan §7/Phase 4j) -->
+    <ClInclude Include="OptiTexts.h" />
     <ClInclude Include="shaders\depth_invert\DI_Common.h" />
     <ClInclude Include="shaders\depth_invert\DI_Dx12.h" />
     <ClInclude Include="shaders\depth_invert\precompiled\DI_Shader.h" />
@@ -519,6 +521,15 @@ copy NUL "$(SolutionDir)x64\Release\a\!! EXTRACT ALL FILES TO GAME FOLDER !!" /Y
     <ClInclude Include="upscalers\ffx\FFXFeature_Dx11On12.h" />
     <ClInclude Include="upscalers\ffx\FFXFeature_Dx12.h" />
     <ClInclude Include="upscalers\ffx\FFXFeature_Vk.h" />
+    <!-- Transplant, 22 Sep (plan §7/Phase 4j) -->
+    <ClInclude Include="upscalers\ffx\FSRDFeature_Dx12.h" />
+    <ClInclude Include="shaders\fsrd_preprocess\FSRDPreprocessor_Dx12.h" />
+    <ClInclude Include="shaders\fsrd_preprocess\FSRDShaderData.h" />
+    <ClInclude Include="shaders\fsrd_preprocess\FSRDShaderUtils.h" />
+    <ClInclude Include="shaders\fsrd_preprocess\precompile\FSRDFloorSeed_Shader.h" />
+    <ClInclude Include="shaders\fsrd_preprocess\precompile\FSRDFloor_Shader.h" />
+    <ClInclude Include="shaders\fsrd_preprocess\precompile\FSRDInputConv_Shader.h" />
+    <ClInclude Include="shaders\fsrd_preprocess\precompile\FSRDOutputComp_Shader.h" />
     <ClInclude Include="inputs\FfxApi_Dx12.h" />
     <ClInclude Include="inputs\FSR2_Dx12.h" />
     <ClInclude Include="inputs\FSR3_Dx12.h" />
@@ -775,6 +786,9 @@ copy NUL "$(SolutionDir)x64\Release\a\!! EXTRACT ALL FILES TO GAME FOLDER !!" /Y
     <ClCompile Include="upscalers\ffx\FFXFeature_Dx11On12.cpp" />
     <ClCompile Include="upscalers\ffx\FFXFeature_Dx12.cpp" />
     <ClCompile Include="upscalers\ffx\FFXFeature_Vk.cpp" />
+    <!-- Transplant, 22 Sep (plan §7/Phase 4j) -->
+    <ClCompile Include="upscalers\ffx\FSRDFeature_Dx12.cpp" />
+    <ClCompile Include="shaders\fsrd_preprocess\FSRDPreprocessor_Dx12.cpp" />
     <ClCompile Include="upscalers\IFeature_Dx11.cpp" />
     <ClCompile Include="upscalers\IFeature_Dx11wDx12.cpp" />
     <ClInclude Include="upscalers\IFeature_Dx11wDx12.h" />

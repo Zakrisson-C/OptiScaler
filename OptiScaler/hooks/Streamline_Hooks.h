@@ -169,6 +169,9 @@ class StreamlineHooks
     static bool isCommonHooked();
     static bool isPclHooked();
     static bool isReflexHooked();
+    // Transplant, 22 Sep (plan §7/Phase 4e/4g): gates TryGetNGXCamConfigFromStreamline - no point
+    // reading State::slLastConstants if nothing is actually populating it.
+    static bool isSetConstantsHooked();
 
   private:
     inline static sl::RenderAPI renderApi = sl::RenderAPI::eCount;

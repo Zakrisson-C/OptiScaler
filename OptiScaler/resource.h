@@ -53,5 +53,7 @@
     STRINGIZE(VER_MAJOR_VERSION) "." STRINGIZE(VER_MINOR_VERSION) "." STRINGIZE(VER_HOTFIX_VERSION) "-final (" VER_BUILD_COMMIT ")"
 #endif // VER_PRE_RELEASE
 
-#define VER_PRODUCT_NAME "OptiScaler v" VER_PRODUCT_VERSION_STR
+// Transplant, 22 Sep (plan §7/Phase 4a): fork identifier appended per Phase 5's own verification
+// step, which checks the title bar for this string.
+#define VER_PRODUCT_NAME "OptiScaler v" VER_PRODUCT_VERSION_STR " (FSR-RR Alpha 2)"
 #endif // OPTISCALER_BUILD_METADATA

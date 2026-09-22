@@ -4,9 +4,15 @@
 
 #include "SysUtils.h"
 #include "Config.h"
+#include "MathUtils.h"
 #include <ankerl/unordered_dense.h>
 #include <misc/IdentifyGpu.h>
 #include <framegen/nvngx/Nvngx_FG.h>
+// Transplant, 22 Sep (plan §7/Phase 4e): FSR-RR availability check and the Streamline camera-config
+// fallback both need these.
+#include "proxies/FfxApi_Proxy.h"
+#include "hooks/Streamline_Hooks.h"
+#include "OptiTexts.h"
 
 /// @brief Calculates the resolution scaling ratio override based on the provided quality level and current
 /// configuration.
@@ -795,8 +801,28 @@ void InitNGXParameters(NVSDK_NGX_Parameter* InParams, API api)
             InParams->Set("SuperSamplingDenoising.MinDriverVersionMinor", 0);
         }
 
-        InParams->Set("SuperSamplingDenoising.Available", 0);
-        InParams->Set("SuperSamplingDenoising.FeatureInitResult", 0);
+        // Transplant, 22 Sep (plan §7/Phase 4e): report FSR Ray Regeneration as the DLSS-RR
+        // substitute when the denoiser module is actually loaded and at the version this build
+        // targets. Pre-transplant this was hardcoded to 0 - no substitute existed yet. sendNotification
+        // is passed false throughout: this is a silent capability probe, not a user-facing action, and
+        // the fork code this mirrors predates IsSRReady/IsDenoiserReady's notification parameter
+        // entirely, so false is the closer match to the original behaviour.
+        bool ssDenoiseAvailable = false;
+
+        if (State::Instance().currentD3D12Device != nullptr)
+        {
+            if (!FfxApiProxy::IsDenoiserReady(false))
+                FfxApiProxy::InitFfxDx12();
+
+            ssDenoiseAvailable = FfxApiProxy::IsSRReady(false) && FfxApiProxy::IsDenoiserReady(false) &&
+                                 FfxApiProxy::VersionDx12_RR() == FfxApiProxy::VersionTarget_RR();
+
+            if (ssDenoiseAvailable)
+                LOG_DEBUG("Setting DLSSD flags for FSR Ray Regeneration");
+        }
+
+        InParams->Set("SuperSamplingDenoising.Available", ssDenoiseAvailable);
+        InParams->Set("SuperSamplingDenoising.FeatureInitResult", ssDenoiseAvailable);
     }
 
     if ((api == API::DX12 || api == API::Vulkan) && (State::Instance().activeFgInput == FGInput::DLSSG ||
@@ -839,4 +865,44 @@ NVNGX_Parameters* GetNGXParameters(API api, bool isPersistent)
 void SetNGXParamAllocType(NVSDK_NGX_Parameter& params, uint32_t allocType)
 {
     params.Set(NGX_AllocTypes::AllocKey.data(), allocType);
+}
+
+// Transplant, 22 Sep (plan §7/Phase 4e). Ported from the fork's NVNGX_Parameter.cpp - that file
+// predates upstream's own (this one, which hosts InitNGXParameters' implementation), so this is
+// one function added into it rather than a whole-file copy.
+/**
+ * @brief Tries to get additional camera configuration for upscaling from Streamline hooks.
+ */
+bool TryGetNGXCamConfigFromStreamline(NVSDK_NGX_Parameter* InParameters)
+{
+    auto& state = State::Instance();
+    const auto& slData = state.slLastConstants;
+
+    if (InParameters && StreamlineHooks::isSetConstantsHooked())
+    {
+        if (slData.cameraNear == sl::INVALID_FLOAT || slData.cameraFar == sl::INVALID_FLOAT ||
+            slData.cameraFOV == sl::INVALID_FLOAT || slData.cameraFOV == 0)
+            return false;
+
+        // This measurement is supposed to be in radians, but some titles supply degrees.
+        // Valid FOV in radians never exceeds PI. Realistic FOV in degrees is basically never in the single digits.
+        const float fov = (slData.cameraFOV < 4.0f) ? slData.cameraFOV : OptiMath::GetRadiansFromDeg(slData.cameraFOV);
+        const float nearPlane = slData.cameraNear;
+        const float farPlane = slData.cameraFar;
+
+        // FSR 2/3 mostly uses these value to scale the disocclusion threshold. If these values are unavailable,
+        // then the near and far plane default to [0,1]/[1,0]. This effectively disables threshold scaling.
+        // FSR 4+ is likely similar. FSR doesn't seem to actually linearize depth (at least the open source ones don't),
+        // so these values don't need to be perfect.
+        //
+        // Assuming reversed hardware depth, the error should be minimal at middle to far distances. Areas near the
+        // camera may become overly sensitive to disocclusions, increasing shimmering.
+        InParameters->Set(OptiKeys::FSR_NearPlane, nearPlane);
+        InParameters->Set(OptiKeys::FSR_FarPlane, farPlane);
+        InParameters->Set(OptiKeys::FSR_CameraFovVertical, fov);
+
+        return true;
+    }
+    else
+        return false;
 }

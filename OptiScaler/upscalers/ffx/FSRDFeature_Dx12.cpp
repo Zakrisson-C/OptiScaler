@@ -440,6 +440,16 @@ bool FSRDFeatureDx12::CreateDenoiserContext()
         _denoiserCtxDesc.flags |= FFX_DENOISER_ENABLE_DEBUGGING;
     }
 
+    // Transplant, 22 Sep (plan §6a/§7): bit 1 was FFX_DENOISER_ENABLE_DOMINANT_LIGHT in the 1.1 SDK
+    // this fork shipped against; 1.2 repurposes it to FFX_DENOISER_ENABLE_VALIDATION -- exhaustive
+    // internal validation of denoiser inputs, the single most valuable diagnostic this migration
+    // unlocks. Exposed as its own menu toggle (menu_common.cpp) alongside FSR-RR Debug Views.
+    if (Config::Instance()->FfxDenoiserValidation.value_or_default())
+    {
+        LOG_INFO("FSR-RR denoiser validation enabled");
+        _denoiserCtxDesc.flags |= FFX_DENOISER_ENABLE_VALIDATION;
+    }
+
     // Create the denoiser context
     {   
         ScopedSkipHeapCapture skipHeapCapture {};

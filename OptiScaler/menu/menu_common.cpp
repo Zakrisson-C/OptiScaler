@@ -2451,6 +2451,10 @@ void MenuCommon::RenderActiveUpscalerSettings(RenderMenuContext& ctx)
         ImGui::PushItemWidth(180.0f * menuResScale);
 
         const bool usesDlssd = currentFeature->GetUpscalerType() == Upscaler::DLSSD;
+        // Transplant, 22 Sep (plan §7): FSR-RR, like DLSSD, substitutes itself in for the user's chosen
+        // SR backend when the game requests Ray Reconstruction, so it needs the same "don't show a
+        // backend picker the user didn't actually choose" treatment as DLSSD below.
+        const bool usesFsrd = currentFeature->GetUpscalerType() == Upscaler::FSRD;
         const bool usesDx12CompatLayer = currentFeature->IsWithDx12();
 
         switch (state.api)
@@ -2469,7 +2473,7 @@ void MenuCommon::RenderActiveUpscalerSettings(RenderMenuContext& ctx)
             spoofingText = config->DxgiSpoofing.value_or_default() ? "On" : "Off";
             ImGui::Text("| Spoof: %s", spoofingText.c_str());
 
-            if (!usesDlssd)
+            if (!usesDlssd && !usesFsrd)
                 AddDx11Backends(currentBackend);
 
             break;
@@ -2487,7 +2491,7 @@ void MenuCommon::RenderActiveUpscalerSettings(RenderMenuContext& ctx)
             spoofingText = config->DxgiSpoofing.value_or_default() ? "On" : "Off";
             ImGui::Text("| Spoof: %s", spoofingText.c_str());
 
-            if (!usesDlssd)
+            if (!usesDlssd && !usesFsrd)
                 AddDx12Backends(currentBackend);
 
             break;
@@ -2517,13 +2521,13 @@ void MenuCommon::RenderActiveUpscalerSettings(RenderMenuContext& ctx)
             ImGui::SameLine(0.0f, 6.0f);
             ImGui::Text("| Spoof: %s", spoofingText.c_str());
 
-            if (!usesDlssd)
+            if (!usesDlssd && !usesFsrd)
                 AddVulkanBackends(currentBackend);
         }
 
         ImGui::PopItemWidth();
 
-        if (!usesDlssd)
+        if (!usesDlssd && !usesFsrd)
         {
             ImGui::SameLine(0.0f, 6.0f);
 
@@ -2557,11 +2561,34 @@ void MenuCommon::RenderActiveUpscalerSettings(RenderMenuContext& ctx)
             ImGui::Spacing();
             ImGui::TextColored(toneMapColor(ImVec4(1.f, 0.8f, 0.f, 1.f)), "nvngx_dlss.dll not found, DLSS disabled!");
         }
+
+        // Transplant, 22 Sep (plan §7): warn if the installed FSR-RR denoiser DLL doesn't match the
+        // version this build was compiled against. Mirrors the nvngx_dlss.dll check above, including its
+        // toneMapColor() convention for warning text (the fork used a raw PushStyleColor/PopStyleColor
+        // pair instead; this keeps HDR tonemapping consistent with every other warning in this section).
+        // sendNotification=false (unlike the fork's literal call) so a missing DLL doesn't fire a toast
+        // every frame the menu is open -- same reasoning as the Phase 4e NVNGX_Parameter.cpp check.
+        {
+            const bool isDenoiserInstalled = FfxApiProxy::IsDenoiserReady(false);
+            const feature_version rrVer = isDenoiserInstalled ? FfxApiProxy::VersionDx12_RR() : feature_version {};
+            const feature_version rrTarget = FfxApiProxy::VersionTarget_RR();
+            const bool isDenoiserReady = isDenoiserInstalled && rrVer.major > 0;
+
+            if (isDenoiserReady && rrVer != rrTarget)
+            {
+                ImGui::Spacing();
+                ImGui::TextColored(toneMapColor(ImVec4(1.f, 0.8f, 0.f, 1.f)),
+                                    "[Warning] FSR-RR version mismatch | Installed: %d.%d.%d | Expected: %d.%d.%d",
+                                    rrVer.major, rrVer.minor, rrVer.patch, rrTarget.major, rrTarget.minor,
+                                    rrTarget.patch);
+            }
+        }
     }
 
     if (currentFeature != nullptr && !currentFeature->IsFrozen())
     {
         const bool usesDlssd = currentFeature->GetUpscalerType() == Upscaler::DLSSD;
+        const bool usesFsrd = currentFeature->GetUpscalerType() == Upscaler::FSRD;
 
         // Dx11 with Dx12
         if (state.api == DX11 && currentFeature->IsWithDx12())
@@ -2662,14 +2689,19 @@ void MenuCommon::RenderActiveUpscalerSettings(RenderMenuContext& ctx)
         }
 
         // FFX -----------------
-        if (!usesDlssd && (currentBackend == Upscaler::FFX || currentBackend == Upscaler::FFX_on12))
+        // Transplant, 22 Sep (plan §7): FSR-RR wraps an FFX-API FSR upscaler, so it belongs in this
+        // section too -- excluded from usesDlssd (FSRD != DLSSD) but its own backend code isn't FFX/
+        // FFX_on12, so it needs listing explicitly alongside them.
+        if (!usesDlssd &&
+            (currentBackend == Upscaler::FFX || currentBackend == Upscaler::FFX_on12 ||
+             currentBackend == Upscaler::FSRD))
         {
             ImGui::SeparatorText("FFX Settings");
 
             if (_ffxUpscalerIndex < 0)
                 _ffxUpscalerIndex = config->FfxUpscalerIndex.value_or_default();
 
-            if (currentBackend == Upscaler::FFX ||
+            if (currentBackend == Upscaler::FFX || currentBackend == Upscaler::FSRD ||
                 currentBackend == Upscaler::FFX_on12 && state.ffxUpscalerVersionNames.size() > 0)
             {
                 ImGui::PushItemWidth(135.0f * menuResScale);
@@ -2700,7 +2732,12 @@ void MenuCommon::RenderActiveUpscalerSettings(RenderMenuContext& ctx)
                     MARK_ALL_BACKENDS_CHANGED();
                 }
 
-                auto majorFsrVersion = currentFeature->Version().major;
+                // Transplant, 22 Sep (plan §7): for FSR-RR, currentFeature->Version() is the RR/denoiser
+                // feature's own version, not the wrapped FSR upscaler's -- use the version State.h/
+                // NVNGX_Parameter.cpp already capture for exactly this purpose (Phase 4a/4e).
+                feature_version fsrUpscalerVersion =
+                    usesFsrd ? state.ffxDenoiserUpscalerVersion : currentFeature->Version();
+                auto majorFsrVersion = fsrUpscalerVersion.major;
 
                 if (majorFsrVersion >= 4)
                 {
@@ -2832,8 +2869,8 @@ void MenuCommon::RenderActiveUpscalerSettings(RenderMenuContext& ctx)
                     }
                 }
 
-                if (currentFeature->Version() >= feature_version { 3, 1, 1 } &&
-                    currentFeature->Version() < feature_version { 4, 0, 0 })
+                if (fsrUpscalerVersion >= feature_version { 3, 1, 1 } &&
+                    fsrUpscalerVersion < feature_version { 4, 0, 0 })
                 {
                     ImGui::Spacing();
 
@@ -2914,7 +2951,7 @@ void MenuCommon::RenderActiveUpscalerSettings(RenderMenuContext& ctx)
                                        "Lower values are more stable with ghosting\n"
                                        "Higher values are more pixelly, but less ghosting");
 
-                        if (currentFeature->Version() >= feature_version { 3, 1, 4 })
+                        if (fsrUpscalerVersion >= feature_version { 3, 1, 4 })
                         {
                             // Reactive Scale
                             float reactiveScale = config->FsrReactiveScale.value_or_default();
@@ -2960,6 +2997,257 @@ void MenuCommon::RenderActiveUpscalerSettings(RenderMenuContext& ctx)
                         ImGui::Spacing();
                     }
                 }
+            }
+        }
+
+        // FSR Ray Regeneration -----------------
+        // Transplant, 22 Sep (plan §7): FSRD's own slider block. Mode dropdown removed -- Mode 1 doesn't
+        // exist post-transplant (plan §6e/6f), so FfxDenoiserMode/ffxDenoiserModes/ffxDenoiserModeNames
+        // were never re-added to Config.h/State.h and there is nothing here to select between.
+        if (usesFsrd)
+        {
+            if (auto ch = ScopedCollapsingHeader("FSR-RR Advanced Settings"); ch.IsHeaderOpen())
+            {
+                ScopedIndent indent {};
+                ImGui::Spacing();
+
+                if (float v = config->FfxDenoiserDisocThreshold.value_or_default();
+                    ImGui::SliderFloat("Disocclusion Threshold", &v, 1e-2f, 1.0f))
+                    config->FfxDenoiserDisocThreshold = v;
+                if (ImGui::IsItemHovered())
+                    ImGui::SetTooltip(
+                        "Controls how sensitive the denoiser is to newly revealed areas when objects move.\n"
+                        "Lower: More sensitive - better handles moving objects, but may cause flickering.\n"
+                        "Higher: Less sensitive - reduces flickering, but may cause ghosting or light smearing.");
+
+                if (float v = config->FfxDenoiserCrossBlNormStr.value_or_default();
+                    ImGui::SliderFloat("Cross Bilateral Normal Strength", &v, 0, 1))
+                    config->FfxDenoiserCrossBlNormStr = v;
+                if (ImGui::IsItemHovered())
+                    ImGui::SetTooltip(
+                        "Controls how strongly the denoiser preserves edges based on surface angles.\n"
+                        "Higher: Keeps edges sharper and prevents blurring across surface boundaries.\n"
+                        "Too high: May introduce noise or artifacts on complex surfaces.");
+
+                if (float v = config->FfxDenoiserStabilityBias.value_or_default();
+                    ImGui::SliderFloat("Temporal Stability Bias", &v, 0.1f, 0.9f))
+                    config->FfxDenoiserStabilityBias = v;
+                if (ImGui::IsItemHovered())
+                    ImGui::SetTooltip(
+                        "Controls how much the denoiser blends previous frames with the current frame.\n"
+                        "Higher: Smoother, less noisy image, but may cause ghosting or loss of fine detail.\n"
+                        "Lower: More responsive and detailed, but may show noise or a boiling effect.");
+
+                if (float v = config->FfxDenoiserMaxRadiance.value_or_default();
+                    ImGui::SliderFloat("Max Radiance", &v, 10, 65500.0f))
+                    config->FfxDenoiserMaxRadiance = v;
+                if (ImGui::IsItemHovered())
+                    ImGui::SetTooltip("Lower: More aggressive firefly removal, but may dim bright highlights.\n"
+                                       "Higher: Preserves bright lights better, but may allow fireflies and "
+                                       "noise through.");
+
+                if (float v = config->FfxDenoiserRadianceClip.value_or_default();
+                    ImGui::SliderFloat("Radiance Clip Deviation", &v, 1, 500))
+                    config->FfxDenoiserRadianceClip = v;
+                if (ImGui::IsItemHovered())
+                    ImGui::SetTooltip(
+                        "Controls tolerance for bright spots relative to their surroundings.\n"
+                        "Lower: Aggressively removes fireflies and noise, but may dim small intense light "
+                        "sources.\n"
+                        "Higher: Better preserves specular highlights and glowing surfaces, but allows more "
+                        "noise.");
+
+                if (float v = config->FfxDenoiserGaussKernRelax.value_or_default();
+                    ImGui::SliderFloat("Gaussian Kernel Relaxation", &v, 0, 1))
+                    config->FfxDenoiserGaussKernRelax = v;
+                if (ImGui::IsItemHovered())
+                    ImGui::SetTooltip(
+                        "Controls how the smoothing filter adapts to surface details.\n"
+                        "Higher: Filter stretches more to follow surface geometry, reducing rippling and "
+                        "banding on smooth surfaces.\n"
+                        "Lower: Slightly sharper with weaker smoothing on large surfaces, may increase "
+                        "banding and rippling.");
+
+                if (ImGui::Button("Reset"))
+                {
+                    config->FfxDenoiserDisocThreshold = 0.1f;
+                    config->FfxDenoiserCrossBlNormStr = 0.5f;
+                    config->FfxDenoiserStabilityBias = 0.5f;
+                    config->FfxDenoiserMaxRadiance = 40000.0f;
+                    config->FfxDenoiserRadianceClip = 40.0f;
+                    config->FfxDenoiserGaussKernRelax = 0.5f;
+                }
+
+                ImGui::SeparatorText("Debug");
+
+                if (!state.ffxDenoiserDebugModes.empty())
+                {
+                    uint64_t ffxDenoiseDebugMode = config->FfxDenoiserDebugMode.value_or_default();
+                    const char* currentEnum = state.ffxDenoiserDebugModeNames[ffxDenoiseDebugMode];
+
+                    if (ImGui::BeginCombo("Debug View", currentEnum))
+                    {
+                        static char filter[255] = "";
+
+                        // Auto focus search
+                        if (ImGui::IsWindowAppearing())
+                            ImGui::SetKeyboardFocusHere();
+
+                        ImGui::InputTextWithHint("##Filter", "Search...", filter, IM_ARRAYSIZE(filter));
+                        ImGui::Separator();
+
+                        // Checks if the entry with the given name matches the filter - case insensitive
+                        const auto GetIsInFilter = [](std::string_view haystack, std::string_view needle) -> bool
+                        {
+                            if (needle.empty())
+                                return true;
+
+                            const auto charPredicate = [](unsigned char a, unsigned char b)
+                            { return std::tolower(a) == std::tolower(b); };
+
+                            return std::search(haystack.begin(), haystack.end(), needle.begin(), needle.end(),
+                                                charPredicate) != haystack.end();
+                        };
+
+                        // Debug view list - these are getting slightly out of hand
+                        for (const uint64_t dbgMode : state.ffxDenoiserDebugModes)
+                        {
+                            const char* name = state.ffxDenoiserDebugModeNames[dbgMode];
+
+                            // If it's not in the filter, don't show it
+                            if (!GetIsInFilter(name, filter))
+                                continue;
+
+                            bool isSelected = (dbgMode == ffxDenoiseDebugMode);
+
+                            if (ImGui::Selectable(name, isSelected))
+                                config->FfxDenoiserDebugMode = dbgMode;
+
+                            if (isSelected)
+                                ImGui::SetItemDefaultFocus();
+                        }
+
+                        ImGui::EndCombo();
+                    }
+                }
+
+                if (float v = config->FfxDenoiserCorrelationBias.value_or_default();
+                    ImGui::SliderFloat("Correlation Bias", &v, 0, 1))
+                    config->FfxDenoiserCorrelationBias = v;
+
+                if (float v = config->FfxDenoiserFloorIsolation.value_or_default();
+                    ImGui::SliderFloat("Floor Isolation", &v, 0, 1))
+                    config->FfxDenoiserFloorIsolation = v;
+
+                if (float v = config->FfxDenoiserBiasMaskStrength.value_or_default();
+                    ImGui::SliderFloat("Bias Mask Strength", &v, 0, 1))
+                    config->FfxDenoiserBiasMaskStrength = v;
+                ShowHelpMarker("Routes pixels flagged by the DLSS bias mask\n"
+                               "(particles, alpha layers, animated textures)\n"
+                               "around the denoiser. 0 = previous behaviour.");
+
+                if (float v = config->FfxDenoiserFloorDetailBoost.value_or_default();
+                    ImGui::SliderFloat("Floor Detail Boost", &v, 0, 1))
+                    config->FfxDenoiserFloorDetailBoost = v;
+                ShowHelpMarker("Pushes high frequency texture detail into the\n"
+                               "floor so it bypasses the denoiser.\n"
+                               "0 = previous behaviour.");
+
+                if (float v = config->FfxDenoiserFloorNormalSharpness.value_or_default();
+                    ImGui::SliderFloat("Floor Normal Sharpness", &v, 0, 64))
+                    config->FfxDenoiserFloorNormalSharpness = v;
+                ShowHelpMarker("Normal edge stop in the floor filter.\n"
+                               "Higher stops harder at creases; 0 disables.");
+
+                if (float v = config->FfxDenoiserFloorAlbedoGuide.value_or_default();
+                    ImGui::SliderFloat("Floor Albedo Guide", &v, 0, 1))
+                    config->FfxDenoiserFloorAlbedoGuide = v;
+                ShowHelpMarker("Releases the floor's luminance edge stop where\n"
+                               "diffuse albedo says the taps share a material, so\n"
+                               "shadows and reflections reach the denoiser instead\n"
+                               "of the floor. 0 = previous behaviour.");
+
+                if (float v = config->FfxDenoiserFloorLumSymmetry.value_or_default();
+                    ImGui::SliderFloat("Floor Luma Symmetry", &v, 0, 1))
+                    config->FfxDenoiserFloorLumSymmetry = v;
+                ShowHelpMarker("Makes the floor's luminance test symmetric between\n"
+                               "centre and tap. The centre-only form routes the two\n"
+                               "sides of one bright edge differently.\n"
+                               "0 = previous behaviour.");
+
+                if (float v = config->FfxDenoiserFloorGrazingSharpness.value_or_default();
+                    ImGui::SliderFloat("Floor Grazing Sharpness", &v, 0, 32))
+                    config->FfxDenoiserFloorGrazingSharpness = v;
+                ShowHelpMarker("Extra normal edge stop in proportion to screen space\n"
+                               "surface slope, where the depth gradient is least\n"
+                               "reliable. 0 disables.");
+
+                {
+                    bool fsrDbg = config->FfxDenoiserFsrDebugViews.value_or_default();
+                    if (ImGui::Checkbox("FSR-RR Debug Views", &fsrDbg))
+                        config->FfxDenoiserFsrDebugViews = fsrDbg;
+                    ShowHelpMarker("Enables FSR-RR's own debug views\n"
+                                   "(Virtual Hit Pos, View Centered Pos, Motion Vectors Z).\n"
+                                   "Needs a denoiser context recreate to take effect.");
+
+                    int vp = config->FfxDenoiserFsrDebugViewport.value_or_default();
+                    if (ImGui::SliderInt("FSR-RR Debug Viewport", &vp, -1, 11))
+                        config->FfxDenoiserFsrDebugViewport = vp;
+                    ShowHelpMarker("-1 = tiled overview of every viewport.\n"
+                                   "0-11 = that viewport full screen.");
+
+                    bool fsrValidation = config->FfxDenoiserValidation.value_or_default();
+                    if (ImGui::Checkbox("Enable Validation", &fsrValidation))
+                        config->FfxDenoiserValidation = fsrValidation;
+                    ShowHelpMarker("FFX_DENOISER_ENABLE_VALIDATION (plan §6a) -- exhaustive internal\n"
+                                   "validation of denoiser inputs. Emits detailed diagnostics when the\n"
+                                   "denoiser receives data it considers invalid.\n"
+                                   "Needs a denoiser context recreate to take effect.");
+                }
+
+                if (float v = config->FfxDenoiserRoughnessExponent.value_or_default();
+                    ImGui::SliderFloat("Roughness Exponent", &v, 0.5f, 3.0f))
+                    config->FfxDenoiserRoughnessExponent = v;
+                ShowHelpMarker("Re-encodes roughness. 1.0 = unchanged.\n"
+                               "2.0 tests DLSS-perceptual vs FSR-linear.\n"
+                               "Judge on puddles and clean car paint.");
+
+                if (float v = config->FfxDenoiserHitDistScale.value_or_default();
+                    ImGui::SliderFloat("Hit Distance Scale", &v, 0.01f, 100.0f, "%.3f",
+                                        ImGuiSliderFlags_Logarithmic))
+                    config->FfxDenoiserHitDistScale = v;
+                ShowHelpMarker("Scales specular ray length. 1.0 = unchanged.\n"
+                               "Confirm units with Virtual Hit Pos first.");
+
+                if (float v = config->FfxDenoiserRoughnessProbe.value_or_default();
+                    ImGui::SliderFloat("Roughness Probe", &v, 0.0f, 1.0f))
+                    config->FfxDenoiserRoughnessProbe = v;
+                ShowHelpMarker("Target for the RoughnessProbe debug view.\n"
+                               "Surfaces go white where roughness matches.");
+
+                if (float v = config->FfxDenoiserFloorSpecGuard.value_or_default();
+                    ImGui::SliderFloat("Floor Specular Guard", &v, 0, 1))
+                    config->FfxDenoiserFloorSpecGuard = v;
+                ShowHelpMarker("Pulls the floor off near-mirror surfaces so\n"
+                               "reflections stop being routed through SkipSignal\n"
+                               "permanently blurred. 0 = unchanged.");
+
+                if (float v = config->FfxDenoiserSplitPrior.value_or_default();
+                    ImGui::SliderFloat("Split Prior", &v, 0, 1))
+                    config->FfxDenoiserSplitPrior = v;
+                ShowHelpMarker("Biases the Mode 2 split toward specular on smooth\n"
+                               "surfaces. Leave at 0 until SignalDelta confirms\n"
+                               "the split is degenerate.");
+
+                if (float v = config->FfxDenoiserFloorSoftMin.value_or_default();
+                    ImGui::SliderFloat("Floor Soft Min", &v, 0, 0.1f, "%.4f"))
+                    config->FfxDenoiserFloorSoftMin = v;
+                ShowHelpMarker("Smooths the clamp of the floor against raw colour.\n"
+                               "An exact min() creases where the two fields cross.\n"
+                               "0 = exact min().");
+
+                ImGui::Spacing();
+                ImGui::Spacing();
             }
         }
 

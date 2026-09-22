@@ -645,8 +645,15 @@ static NVSDK_NGX_Result TryCreateOptiFeature(ID3D12GraphicsCommandList* InCmdLis
     }
     else
     {
-        upscalerBackend = Upscaler::DLSSD;
-        LOG_INFO("Creating DLSSD (Ray Reconstruction) feature");
+        // Transplant, 22 Sep (plan §7/Phase 4c/4f). Pre-transplant this always tried DLSSD
+        // passthrough, relying on FeatureProvider_Dx12::GetFeature's own dlssCapable check to fall
+        // back to FSR 2.1.2 on non-Nvidia GPUs. Mirrors the fork's own heuristic instead: whatever
+        // the user picked as their SR backend decides the RR substitute too - DLSS picked -> try
+        // real DLSSD passthrough; anything else -> FSR-RR. (Inherited quirk, not introduced here:
+        // an Nvidia user who set e.g. XeSS as their SR backend gets FSR-RR for RR requests too,
+        // same as the fork's own upscalerName.starts_with("dlss") check would have done.)
+        upscalerBackend = (GetUpscalerBackend() == Upscaler::DLSS) ? Upscaler::DLSSD : Upscaler::FSRD;
+        LOG_INFO("Creating {} (Ray Reconstruction) feature", UpscalerDisplayName(upscalerBackend));
     }
 
     // Root signature restoration setup
@@ -1048,6 +1055,10 @@ static NVSDK_NGX_Result TryEvaluateOptiFeature(ID3D12GraphicsCommandList* InCmdL
     bool evalSuccess = false;
     {
         ScopedSkipHeapCapture skip {};
+        // Transplant, 22 Sep (plan §7/Phase 4f): fills in near/far/FOV from Streamline when the game
+        // doesn't supply them via NGX params directly. Not DLSSD-specific - runs for every upscaler -
+        // but FSRD is a consumer (OptiKeys::FSR_NearPlane/FarPlane/CameraFovVertical).
+        TryGetNGXCamConfigFromStreamline(InParameters);
         evalSuccess = feature->Evaluate(InCmdList, InParameters);
 
         // Resource tracking

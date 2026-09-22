@@ -1130,6 +1130,16 @@ class FfxApiProxy
         return denoiser_dx12.version;
     }
 
+    // Transplant, 22 Sep (plan §7/Phase 4d): FSRD's DLSS-RR-availability check compares the loaded
+    // denoiser's version against the version this build was compiled against, mirroring how the base
+    // upscaler's own readiness checks work elsewhere in this class.
+    static feature_version VersionTarget_RR()
+    {
+        return { .major = FFX_DENOISER_VERSION_MAJOR,
+                .minor = FFX_DENOISER_VERSION_MINOR,
+                .patch = FFX_DENOISER_VERSION_PATCH };
+    }
+
     static feature_version VersionDx12_RC()
     {
         if (radiance_dx12.Query == nullptr)

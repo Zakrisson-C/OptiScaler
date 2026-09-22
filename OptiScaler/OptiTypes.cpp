@@ -78,6 +78,9 @@ std::string UpscalerDisplayName(Upscaler upscaler, API api)
 
     case Upscaler::DLSSD:
         return "DLSSD";
+
+    case Upscaler::FSRD:
+        return "FSR-RR";
     }
 
     return "????";
@@ -116,6 +119,9 @@ std::string UpscalerShortName(Upscaler upscaler)
 
     case Upscaler::DLSSD:
         return "DLSSD";
+
+    case Upscaler::FSRD:
+        return "FSR-RR";
     }
 
     return "????";
@@ -148,6 +154,8 @@ std::string UpscalerToCode(Upscaler upscaler)
         return "dlssd";
     case Upscaler::FSR31: // DX11 only
         return "fsr31";
+    case Upscaler::FSRD: // Transplant, 22 Sep (plan §7/Phase 4c). Matches OptiKeys::FSR_RR.
+        return "fsr-rr";
     default: // Upscaler::Reset and unknown
         return "";
     }
@@ -163,6 +171,7 @@ Upscaler CodeToUpscaler(const std::string& code)
         { "ffx", Upscaler::FFX },     { "ffx_12", Upscaler::FFX_on12 },
         { "dlss", Upscaler::DLSS },   { "dlssd", Upscaler::DLSSD },
         { "fsr31", Upscaler::FSR31 }, { "fsr31_12", Upscaler::FFX_on12 }, // for compat reasons
+        { "fsr-rr", Upscaler::FSRD }, // Transplant, 22 Sep (plan §7/Phase 4c)
     };
 
     auto it = mapping.find(code);

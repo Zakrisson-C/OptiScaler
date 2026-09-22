@@ -303,6 +303,19 @@ bool Config::Reload(std::filesystem::path iniPath)
                 FsrNonLinearColorSpace.set_volatile_value(true);
         }
 
+        // FSR-RR (transplant, 22 Sep, plan §7/Phase 4b). Only the six settings that round-trip
+        // through the SDK's own runtime configure API (§6c/§6j) are persisted - the rest
+        // (floor/debug/diagnostic tuning) are runtime-only, same as pre-transplant. DenoiserMode
+        // dropped per §6f.
+        {
+            FfxDenoiserDisocThreshold.set_from_config(readFloat("FSR-RR", "DisocclusionThreshold"));
+            FfxDenoiserCrossBlNormStr.set_from_config(readFloat("FSR-RR", "CrossBilateralNormalStrength"));
+            FfxDenoiserStabilityBias.set_from_config(readFloat("FSR-RR", "TemporalStabilityBias"));
+            FfxDenoiserMaxRadiance.set_from_config(readFloat("FSR-RR", "MaxRadiance"));
+            FfxDenoiserRadianceClip.set_from_config(readFloat("FSR-RR", "RadianceClipDeviation"));
+            FfxDenoiserGaussKernRelax.set_from_config(readFloat("FSR-RR", "GaussianKernelRelaxation"));
+        }
+
         // XeSS
         {
             BuildPipelines.set_from_config(readBool("XeSS", "BuildPipelines"));
@@ -1131,6 +1144,22 @@ bool Config::SaveIni()
         ini.SetValue("FSR", "FsrNonLinearSRGB", GetBoolValue(Instance()->FsrNonLinearSRGB.value_for_config()).c_str());
         ini.SetValue("FSR", "FsrAgilitySDKUpgrade",
                      GetBoolValue(Instance()->FsrAgilitySDKUpgrade.value_for_config()).c_str());
+    }
+
+    // FSR-RR (transplant, 22 Sep, plan §7/Phase 4b)
+    {
+        ini.SetValue("FSR-RR", "DisocclusionThreshold",
+                     GetFloatValue(Instance()->FfxDenoiserDisocThreshold.value_for_config()).c_str());
+        ini.SetValue("FSR-RR", "CrossBilateralNormalStrength",
+                     GetFloatValue(Instance()->FfxDenoiserCrossBlNormStr.value_for_config()).c_str());
+        ini.SetValue("FSR-RR", "TemporalStabilityBias",
+                     GetFloatValue(Instance()->FfxDenoiserStabilityBias.value_for_config()).c_str());
+        ini.SetValue("FSR-RR", "MaxRadiance",
+                     GetFloatValue(Instance()->FfxDenoiserMaxRadiance.value_for_config()).c_str());
+        ini.SetValue("FSR-RR", "RadianceClipDeviation",
+                     GetFloatValue(Instance()->FfxDenoiserRadianceClip.value_for_config()).c_str());
+        ini.SetValue("FSR-RR", "GaussianKernelRelaxation",
+                     GetFloatValue(Instance()->FfxDenoiserGaussKernRelax.value_for_config()).c_str());
     }
 
     // XeSS

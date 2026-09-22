@@ -809,6 +809,34 @@
     <ClInclude Include="upscalers\ffx\FFXFeature_Dx12.h">
       <Filter>Header Files</Filter>
     </ClInclude>
+    <!-- Transplant, 22 Sep (plan §7/Phase 4j) -->
+    <ClInclude Include="upscalers\ffx\FSRDFeature_Dx12.h">
+      <Filter>Header Files</Filter>
+    </ClInclude>
+    <ClInclude Include="OptiTexts.h">
+      <Filter>Header Files</Filter>
+    </ClInclude>
+    <ClInclude Include="shaders\fsrd_preprocess\FSRDPreprocessor_Dx12.h">
+      <Filter>Header Files</Filter>
+    </ClInclude>
+    <ClInclude Include="shaders\fsrd_preprocess\FSRDShaderData.h">
+      <Filter>Header Files</Filter>
+    </ClInclude>
+    <ClInclude Include="shaders\fsrd_preprocess\FSRDShaderUtils.h">
+      <Filter>Header Files</Filter>
+    </ClInclude>
+    <ClInclude Include="shaders\fsrd_preprocess\precompile\FSRDFloorSeed_Shader.h">
+      <Filter>Header Files</Filter>
+    </ClInclude>
+    <ClInclude Include="shaders\fsrd_preprocess\precompile\FSRDFloor_Shader.h">
+      <Filter>Header Files</Filter>
+    </ClInclude>
+    <ClInclude Include="shaders\fsrd_preprocess\precompile\FSRDInputConv_Shader.h">
+      <Filter>Header Files</Filter>
+    </ClInclude>
+    <ClInclude Include="shaders\fsrd_preprocess\precompile\FSRDOutputComp_Shader.h">
+      <Filter>Header Files</Filter>
+    </ClInclude>
     <ClInclude Include="upscalers\ffx\FFXFeature_Vk.h">
       <Filter>Header Files</Filter>
     </ClInclude>
@@ -1419,6 +1447,13 @@
       <Filter>Source Files</Filter>
     </ClCompile>
     <ClCompile Include="upscalers\ffx\FFXFeature_Dx12.cpp">
+      <Filter>Source Files</Filter>
+    </ClCompile>
+    <!-- Transplant, 22 Sep (plan §7/Phase 4j) -->
+    <ClCompile Include="upscalers\ffx\FSRDFeature_Dx12.cpp">
+      <Filter>Source Files</Filter>
+    </ClCompile>
+    <ClCompile Include="shaders\fsrd_preprocess\FSRDPreprocessor_Dx12.cpp">
       <Filter>Source Files</Filter>
     </ClCompile>
     <ClCompile Include="upscalers\ffx\FFXFeature_Vk.cpp">

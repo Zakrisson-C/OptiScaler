@@ -450,6 +450,79 @@ class Config
     CustomOptional<bool> FsrNonLinearPQ { false };
     CustomOptional<bool> FsrAgilitySDKUpgrade { false };
 
+    // FSR-RR (transplant, 22 Sep, plan §7/Phase 4b). FfxDenoiserMode dropped per §6f - the denoiser
+    // 1.2 ABI has no mode concept left to select, so there is nothing for it to configure.
+    CustomOptional<int> FfxDenoiserIndex { 0 };
+    CustomOptional<uint64_t> FfxDenoiserDebugMode { 0 };
+
+    CustomOptional<float> FfxDenoiserDisocThreshold { 0.1f };
+    CustomOptional<float> FfxDenoiserCrossBlNormStr { 0.5f };
+    CustomOptional<float> FfxDenoiserStabilityBias { 0.5f };
+    CustomOptional<float> FfxDenoiserMaxRadiance { 4e4f };
+    CustomOptional<float> FfxDenoiserRadianceClip { 40.0f };
+    CustomOptional<float> FfxDenoiserGaussKernRelax { 0.5f };
+
+    CustomOptional<float> FfxDenoiserCorrelationBias { 1.0f };
+    CustomOptional<float> FfxDenoiserFloorIsolation { 1.0f };
+
+    // Routes pixels flagged by the DLSS bias-current-color mask (particles, alpha layers,
+    // animated / video textures) around the denoiser via the floor and skip signal.
+    // 0 restores the previous behaviour, where the mask was bound but unused.
+    CustomOptional<float> FfxDenoiserBiasMaskStrength { 1.0f };
+
+    // Fraction of the floor filter's high frequency luminance residual pushed back into
+    // the floor on the final pass, so texture microcontrast bypasses the denoiser.
+    // 0 restores the previous behaviour.
+    CustomOptional<float> FfxDenoiserFloorDetailBoost { 0.0f };
+
+    // Exponent on the floor filter's normal edge-stopping weight. Higher stops harder at
+    // creases and silhouettes; 0 disables the term entirely.
+    CustomOptional<float> FfxDenoiserFloorNormalSharpness { 16.0f };
+
+    // Fraction of the floor filter's luminance edge-stop released where diffuse albedo says
+    // two taps share a material. Helps prevent overblurring on textured surfaces where the
+    // real edge is between materials, not depth. 0 restores the previous behaviour.
+    CustomOptional<float> FfxDenoiserFloorAlbedoGuide { 1.0f };
+
+    // Blends the floor filter's luminance normaliser from centre-only (0) to max(centre, tap)
+    // (1). The centre-only form routes the two sides of one luminance edge through different
+    // paths. 0 restores the previous behaviour.
+    CustomOptional<float> FfxDenoiserFloorLumSymmetry { 1.0f };
+
+    // Additional normal edge-stop exponent applied in proportion to screen space surface
+    // slope, where the single pixel depth gradient is least reliable. 0 disables the term.
+    CustomOptional<float> FfxDenoiserFloorGrazingSharpness { 0.0f };
+
+    // Smoothing radius on the min(raw, floor) clamp in the packing shader, in the units of
+    // the colour buffer. 0 restores the exact min().
+    CustomOptional<float> FfxDenoiserFloorSoftMin { 0.0f };
+
+    // Diagnostics and input-encoding probes. Requires a denoiser context recreate.
+    CustomOptional<bool> FfxDenoiserFsrDebugViews { false };
+
+    // -1 = OVERVIEW (all viewports tiled). 0..11 = that viewport full screen.
+    CustomOptional<int> FfxDenoiserFsrDebugViewport { -1 };
+
+    // Transplant, 22 Sep (plan §6a/§7): FFX_DENOISER_ENABLE_VALIDATION, new in denoiser 1.2. Runtime-only
+    // like its sibling above -- not ini-persisted. Requires a denoiser context recreate.
+    CustomOptional<bool> FfxDenoiserValidation { false };
+
+    // Re-encodes roughness before anything consumes it. 1.0 = bit-identical.
+    CustomOptional<float> FfxDenoiserRoughnessExponent { 1.0f };
+
+    // Scales the specular ray length handed to FSR-RR. 1.0 = bit-identical.
+    CustomOptional<float> FfxDenoiserHitDistScale { 1.0f };
+
+    // Target value for the roughness null-probe debug view.
+    CustomOptional<float> FfxDenoiserRoughnessProbe { 0.1f };
+
+    // Pulls the floor off near-mirror surfaces. 0 = bit-identical.
+    CustomOptional<float> FfxDenoiserFloorSpecGuard { 0.0f };
+
+    // Biases the Mode 2 split toward specular on smooth surfaces. 0 = bit-identical.
+    // Contingent on the signal-delta view confirming the split is degenerate.
+    CustomOptional<float> FfxDenoiserSplitPrior { 0.0f };
+
     // These default values will be overwritten at upscaler init time with optimized values
     CustomOptional<float> FsrVelocity { 1.0f };
     CustomOptional<float> FsrReactiveScale { 1.0f };

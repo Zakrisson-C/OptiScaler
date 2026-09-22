@@ -51,6 +51,30 @@ static NVSDK_NGX_Result NVSDK_CONV NVSDK_NGX_DLSS_GetStatsCallback(NVSDK_NGX_Par
 /// values.
 void InitNGXParameters(NVSDK_NGX_Parameter* InParams, API api);
 
+// Transplant, 22 Sep (plan §7/Phase 4e). FSRDFeature_Dx12.cpp calls this to pull resources
+// (color/albedo/mask textures etc.) straight out of the NGX parameter table.
+/**
+ * @brief Attempts to retrieve a pointer-type NGX parameter.
+ * @tparam T Must be a pointer type (e.g., ID3D12Resource*).
+ * @return True on success.
+ */
+template <typename T>
+    requires std::is_pointer_v<T>
+static bool TryGetNGXVoidPointer(const NVSDK_NGX_Parameter& ngxParams, const char* key, T& outValue)
+{
+    NVSDK_NGX_Result result = ngxParams.Get(key, &outValue);
+
+    // Fallback
+    if (result != NVSDK_NGX_Result_Success)
+        result = ngxParams.Get(key, reinterpret_cast<void**>(&outValue));
+
+    return (result == NVSDK_NGX_Result_Success) && outValue != nullptr;
+}
+
+/// @brief Tries to get additional camera configuration (near/far/FOV) for upscaling from Streamline
+/// hooks, for titles that don't supply it directly through NGX params.
+bool TryGetNGXCamConfigFromStreamline(NVSDK_NGX_Parameter* InParameters);
+
 /// @brief Internal variant structure holding the value of a single NGX parameter.
 struct Parameter
 {

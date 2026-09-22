@@ -63,6 +63,12 @@ enum class Upscaler
     DLSS, // "dlss", used for the DLSS upscaler backend
 
     DLSSD, // "dlssd", used for the DLSS-D/Ray Reconstruction upscaler+denoiser backend
+
+    // Transplant, 22 Sep (plan §7/Phase 4c). FFX's Ray Reconstruction counterpart - pairs with FFX
+    // the way DLSSD pairs with DLSS, appended here rather than placed next to FFX above to avoid
+    // renumbering DLSS/DLSSD.
+    FSRD, // "fsr-rr", the FSR Ray Regeneration DLSS-RR substitute
+
     Reset
 };
 

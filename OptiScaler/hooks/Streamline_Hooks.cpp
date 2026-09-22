@@ -1047,6 +1047,10 @@ sl::Result StreamlineHooks::hkslSetConstants(const sl::Constants& values, const 
     std::scoped_lock lock(setConstantsMutex);
     LOG_TRACE("called with frameIndex: {}, viewport: {}", (unsigned int) frame, (unsigned int) viewport);
 
+    // Transplant, 22 Sep (plan §7/Phase 4g): FSRD reads the raw per-frame camera constants back off
+    // State (see FSRDFeature_Dx12.cpp's PrepareDenoiserInput) rather than through slFGInputs, which
+    // only keeps the subset FG cares about.
+    State::Instance().slLastConstants = values;
     State::Instance().slFGInputs.setConstants(values, (uint32_t) frame);
 
     return o_slSetConstants(values, frame, viewport);
@@ -2329,3 +2333,6 @@ bool StreamlineHooks::isCommonHooked() { return o_common_slGetPluginFunction != 
 bool StreamlineHooks::isPclHooked() { return o_pcl_slGetPluginFunction != nullptr; }
 
 bool StreamlineHooks::isReflexHooked() { return o_reflex_slGetPluginFunction != nullptr; }
+
+// Transplant, 22 Sep (plan §7/Phase 4e/4g).
+bool StreamlineHooks::isSetConstantsHooked() { return o_slSetConstants != nullptr; }

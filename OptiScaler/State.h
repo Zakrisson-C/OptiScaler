@@ -183,6 +183,10 @@ class State
     // Streamline FG inputs
     Sl_Inputs_Dx12 slFGInputs = {};
     Sl1_Inputs_Dx12 s_sl1FGInputs {};
+    // Transplant, 22 Sep (plan §7/Phase 4g): raw per-frame Streamline camera constants, captured
+    // verbatim in Streamline_Hooks.cpp's hkslSetConstants. FSRD reads this directly (PrepareDenoiserInput)
+    // for the camera fields DLSS-RR doesn't surface through NGX params.
+    sl::Constants slLastConstants = {};
 
     // OptiFG
     bool fgPresentIsCalled = false;
@@ -299,6 +303,16 @@ class State
     std::vector<const char*> ffxFGVersionNames {};
     std::vector<uint64_t> ffxFGVersionIds {};
     std::optional<uint32_t> currentFsr4Preset {};
+
+    // FSR-RR (transplant, 22 Sep, plan §7/Phase 4a). No mode-dropdown state here (ffxDenoiserModes/
+    // ffxDenoiserModeNames in the pre-transplant branch) - §6f removed the mode toggle, so there is
+    // nothing left to populate a dropdown from.
+    std::vector<const char*> ffxDenoiserVersionNames {};
+    std::vector<uint64_t> ffxDenoiserVersionIds {};
+    feature_version ffxDenoiserUpscalerVersion {};
+    // Debug
+    std::vector<uint64_t> ffxDenoiserDebugModes;
+    std::unordered_map<uint64_t, const char*> ffxDenoiserDebugModeNames;
 
     // Linux checks
     bool isRunningOnLinux = false;
