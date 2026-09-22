@@ -265,6 +265,31 @@ void CSMain(uint3 groupID : SV_GroupID, uint3 gtID : SV_GroupThreadID)
     const float3 viewSpacePos = GetViewSpacePos(px);
     const float compressedDepth = log(viewSpacePos.z + 1.0f) / log(FarPlane + 1.0f);
     
+    // Motion Vectors & Depth Delta
+    //
+    // Computed before the validity gate and written unconditionally. OutMotion is the only
+    // UAV the skip path left untouched, so skipped pixels used to hand FSR-RR whatever the
+    // texture happened to contain - never cleared, and for a pixel that has always been
+    // skipped, never written at all. The gate rejects two large populations: everything at
+    // the far plane (the whole sky outdoors) and everything with near-black albedo
+    // (emissives, billboards). Both were feeding the denoiser undefined motion and an
+    // undefined linear depth delta.
+    //
+    // The computation is unchanged and depends only on viewSpacePos, which is already
+    // available here, so the valid path is bit-identical - this only extends the same
+    // values to the pixels that previously got none.
+    //
+    // Find the current pixel in world space and calculate movement in view space
+    const float3 worldSpacePos = mul(InvViewMatrix, float4(viewSpacePos, 1.0f)).xyz;
+    float3 prevViewSpacePos = mul(PrevViewMatrix, float4(worldSpacePos, 1.0f)).xyz;
+    prevViewSpacePos.z = abs(prevViewSpacePos.z);
+
+    // FSR-RR requires Linear Depth Delta in Blue channel
+    const float2 motionIn = InMotionVectors[px].rg; // RG: Pixel Movement
+    const float depthDelta = (prevViewSpacePos.z - viewSpacePos.z);
+    const float3 motionOut = float3(motionIn, depthDelta);
+    OutMotion[px] = half4(motionOut, 0.0f);
+
     if (((compressedDepth < 0.99f) && totalAlbedo > 1e-2f) || IsSet(FLAGS_DEBUG))
     {        
         // Normals - FSR-RR requries world normals.
@@ -284,19 +309,6 @@ void CSMain(uint3 groupID : SV_GroupID, uint3 gtID : SV_GroupThreadID)
         // Output: RG=OctNormal, B=Roughness, A=MaterialID
         OutNormals[px] = GetSafeFP16(float4(octNormal, roughness, materialType));
    
-        // Motion Vectors & Depth Delta
-        //
-        // Find the current pixel in world space and calculate movement in view space
-        const float3 worldSpacePos = mul(InvViewMatrix, float4(viewSpacePos, 1.0f)).xyz;
-        float3 prevViewSpacePos = mul(PrevViewMatrix, float4(worldSpacePos, 1.0f)).xyz;
-        prevViewSpacePos.z = abs(prevViewSpacePos.z);
-            
-        // FSR-RR requires Linear Depth Delta in Blue channel
-        const float2 motionIn = InMotionVectors[px].rg; // RG: Pixel Movement
-        const float depthDelta = (prevViewSpacePos.z - viewSpacePos.z);
-        const float3 motionOut = float3(motionIn, depthDelta);
-        OutMotion[px] = half4(motionOut, 0.0f);
-
         half hitDist = 0.0f;
         float dbgHitGate = 0.0f;
         half3 demodColor = 0.0f;
@@ -561,6 +573,8 @@ void CSMain(uint3 groupID : SV_GroupID, uint3 gtID : SV_GroupThreadID)
     }
     else // Skip
     {
+        // OutMotion is written above the gate for every pixel and is deliberately not
+        // zeroed here: the game's own motion vectors are valid for skipped pixels too.
         OutNormals[px] = 0.0f;
         OutSpecAlbedo[px] = 0.0f;
         OutDiffAlbedo[px] = 0.0f;
