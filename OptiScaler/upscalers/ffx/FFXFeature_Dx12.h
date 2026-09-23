@@ -23,7 +23,9 @@ class FFXFeatureDx12 : public FFXFeature, public IFeature_Dx12
     bool QueryProviders(ID3D12Device* device);
 
     feature_version Version() override { return FFXFeature::Version(); }
-    Upscaler GetUpscalerType() const final { return Upscaler::FFX; }
+    // Not `final` (transplant fix, 23 Sep): FSRDFeatureDx12 derives from this class and must report
+    // Upscaler::FSRD, or the menu, Name() and every "is FSR-RR active" check see plain FFX.
+    Upscaler GetUpscalerType() const override { return Upscaler::FFX; }
     API Api() const override { return IFeature_Dx12::Api(); }
     bool CallsUpscalerEndByItself() override { return IFeature_Dx12::CallsUpscalerEndByItself(); }
 

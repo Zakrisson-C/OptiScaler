@@ -775,20 +775,38 @@ bool FSRDFeatureDx12::PrepareDenoiserInput(ID3D12GraphicsCommandList* InCommandL
         .flags = FFX_DENOISER_DISPATCH_NON_GAMMA_ALBEDO
     };
 
-    // World-to-view and (unjittered) view-to-projection matrices, direct from DirectXMath's own
-    // row-major/row-vector storage - the 1.2 header's doc comment confirms no transpose is needed
-    // here (unlike _convDesc's InvViewMatrix/InvProjMatrix/PrevViewMatrix, which DO transpose
-    // because those feed an HLSL constant buffer expecting column-major). FfxApiMatrix4x4 is 4
-    // contiguous FfxApiFloat4 rows - bit-identical layout to XMFLOAT4X4 - so this follows the same
-    // reinterpret_cast-into-XMStore idiom GetFloat3FFX() above already uses for the 3-component case.
+    // World-to-view and (unjittered) view-to-projection matrices.
     //
-    // OPEN, not resolved here (transplant plan §6g): whether the _isRightHanded-conditional flip
-    // the old cameraForward basis vector used to get needs an equivalent at the matrix level.
-    // The header documents storage/multiplication convention but says nothing about handedness
-    // expectations, and this branch has a handedness-bug history - do not guess. Passed through
-    // unmodified; §8.3's Motion Vectors Z and View Centered Pos debug views cover this question.
-    XMStoreFloat4x4(reinterpret_cast<XMFLOAT4X4*>(&dispatchDesc.view), _viewMatrix);
-    XMStoreFloat4x4(reinterpret_cast<XMFLOAT4X4*>(&dispatchDesc.projection), _projMatrix);
+    // Transplant fix, 23 Sep: these MUST be transposed. _viewMatrix/_projMatrix are held in the
+    // column-vector convention (row-major storage): TryGetNGXMatrix() transposes the raw NGX data
+    // into it, GetFloat3Column(_invViewMatrix, 3) reads the camera position out of column 3,
+    // the Streamline fallback builds _invViewMatrix from basis columns, and GetViewPlanes() reads
+    // the projection's z row as [.., A, B] with W in row 3. The fork's working 1.1 build relied on
+    // exactly that convention (camera basis vectors taken from columns). The 1.2 header wants
+    // row-major storage with ROW vectors (its own example puts translation in row 3) and says
+    // "row-major with column vectors: requires transpose". Phase 3 passed them untransposed on the
+    // mistaken belief they were already DirectXMath row-vector matrices, which handed the denoiser
+    // an inverted camera rotation, a misplaced translation and a scrambled projection.
+    //
+    // Still OPEN (transplant plan §6b/§6g): whether 1.2's *signed* linear depth needs a sign flip
+    // for a right-handed view space. The shim writes positive depth, as 1.1 wanted. See the camera
+    // convention log line below and the Motion Vectors Z / View Centered Pos debug views.
+    XMMATRIX view = _viewMatrix;
+    XMMATRIX proj = _projMatrix;
+
+    // Diagnostic toggle, default off: z-flip S = diag(1,1,-1,1). In the column-vector convention
+    // above, view' = S * view negates view-space z, and proj' = proj * S compensates so that
+    // proj' * view' == proj * view (clip space, and therefore the image, is unchanged). The shim's
+    // positive linear depth and its depth delta then match view' for a right-handed game.
+    if (Config::Instance()->FfxDenoiserFlipViewZ.value_or_default())
+    {
+        const XMMATRIX flipZ = XMMatrixScaling(1.0f, 1.0f, -1.0f);
+        view = XMMatrixMultiply(flipZ, view);
+        proj = XMMatrixMultiply(proj, flipZ);
+    }
+
+    XMStoreFloat4x4(reinterpret_cast<XMFLOAT4X4*>(&dispatchDesc.view), XMMatrixTranspose(view));
+    XMStoreFloat4x4(reinterpret_cast<XMFLOAT4X4*>(&dispatchDesc.projection), XMMatrixTranspose(proj));
 
     // Populate resources and link signal headers: dispatchDesc -> indirectSpecularSignal ->
     // indirectDiffuseSignal (see FSRDPreprocessor_Dx12::GetSignal).
@@ -973,6 +991,20 @@ bool FSRDFeatureDx12::ConvertDenoiserBuffers(ID3D12GraphicsCommandList* InComman
     const ViewPlanes planes = GetViewPlanes(_projMatrix, DepthInverted());
     _convDesc.NearPlane = planes.nearPlane;
     _convDesc.FarPlane = planes.farPlane;
+
+    // One-time camera convention report (transplant, 23 Sep) - evidence for the open signed-depth /
+    // handedness question in PrepareDenoiserInput. W is the projection's w_clip = W * z_view term:
+    // +1 means +z is in front of the camera (left-handed view space), -1 means -z (right-handed).
+    if (!_loggedCameraConvention)
+    {
+        _loggedCameraConvention = true;
+        LOG_INFO("Camera: proj A={} B={} W={} ({}-handed view space), near={} far={}{}, depthInverted={}, "
+                 "camPos=({}, {}, {})",
+                 _projMatrix.r[2].m128_f32[2], _projMatrix.r[2].m128_f32[3], _projMatrix.r[3].m128_f32[2],
+                 _projMatrix.r[3].m128_f32[2] < 0.0f ? "right" : "left", planes.nearPlane, planes.farPlane,
+                 planes.isInfinite ? " (infinite)" : "", DepthInverted(), _invViewMatrix.r[0].m128_f32[3],
+                 _invViewMatrix.r[1].m128_f32[3], _invViewMatrix.r[2].m128_f32[3]);
+    }
 
     if (!s_isHWDepth)
         _convDesc.Flags |= (uint32_t) FSRDConvFlags::IsDepthLinear;

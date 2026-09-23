@@ -10,10 +10,9 @@
  *
  * Phase 2 note (transplant, 22 Sep): base class changed from FSR31FeatureDx12 (single inheritance)
  * to FFXFeatureDx12 (public FFXFeature, public IFeature_Dx12 - split inheritance). Name() is
- * dropped entirely: IFeature::Name() is non-virtual now (derives from GetUpscalerType(), which
- * FFXFeatureDx12 locks `final` to Upscaler::FFX) so there is nothing left to override - the
- * existing `_name = OptiTexts::FSR_RR_Name;` assignment in InitFFX (below) is untouched and still
- * the right way to carry the FSR-RR display string. Evaluate() is renamed to EvaluateInternal():
+ * dropped: IFeature::Name() is non-virtual now and derives from GetUpscalerType(). (23 Sep
+ * correction: that makes GetUpscalerType() the hook, not a dead end - FFXFeatureDx12 had it
+ * `final`, which is now relaxed so this class can report Upscaler::FSRD, see below.) Evaluate() is renamed to EvaluateInternal():
  * IFeature_Dx12::Evaluate() is now a fixed, non-overridable template-method entry point that runs
  * the shared RCAS/OutputScaling/Magnifier post-process pipeline and GPU timing around whatever
  * EvaluateInternal() does - see FSRDFeature_Dx12.cpp for how the old PrepareUpscalerInput /
@@ -34,6 +33,12 @@ class FSRDFeatureDx12 : public FFXFeatureDx12
     ~FSRDFeatureDx12();
 
     feature_version Version() override { return FFXFeatureDx12::Version(); }
+
+    // Transplant fix, 23 Sep: without this FSR-RR inherits FFXFeatureDx12's Upscaler::FFX, so
+    // IFeature::Name() reads "FSR" (shown in game as "FSR 1.2", the denoiser's version) and the
+    // menu's usesFsrd gate never opens: no FSR-RR settings, no debug views. The fork got its
+    // display name from overriding Name(), which master made non-virtual; the type is the hook now.
+    Upscaler GetUpscalerType() const override { return Upscaler::FSRD; }
 
     bool EvaluateInternal(ID3D12GraphicsCommandList* InCommandList, NVSDK_NGX_Parameter* InParameters) override;
 
@@ -81,6 +86,7 @@ class FSRDFeatureDx12 : public FFXFeatureDx12
 
     FSRDConvDesc _convDesc;
     bool _isInReset = false; // Was inherited from the fork's FSR31FeatureDx12; master's FFXFeatureDx12 has none
+    bool _loggedCameraConvention = false; // One-time camera/projection convention log (23 Sep)
 
     DirectX::XMFLOAT3 _lastCamPos; // Last world space camera position
 

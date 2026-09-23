@@ -3205,6 +3205,16 @@ void MenuCommon::RenderActiveUpscalerSettings(RenderMenuContext& ctx)
                                    "Needs a denoiser context recreate to take effect.");
                 }
 
+                bool flipViewZ = config->FfxDenoiserFlipViewZ.value_or_default();
+                if (ImGui::Checkbox("Flip View Z (RH -> LH)", &flipViewZ))
+                    config->FfxDenoiserFlipViewZ = flipViewZ;
+                ShowHelpMarker("Diagnostic for the camera handedness question.\n"
+                               "Negates view-space z in the matrices given to the\n"
+                               "denoiser, so a right-handed game camera is seen as\n"
+                               "left-handed with positive depth (what the shim writes).\n"
+                               "The log's 'Camera:' line says which handedness the game uses.\n"
+                               "Judge with View Centered Pos and reflections in motion.");
+
                 if (float v = config->FfxDenoiserRoughnessExponent.value_or_default();
                     ImGui::SliderFloat("Roughness Exponent", &v, 0.5f, 3.0f))
                     config->FfxDenoiserRoughnessExponent = v;

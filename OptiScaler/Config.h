@@ -507,6 +507,11 @@ class Config
     // like its sibling above -- not ini-persisted. Requires a denoiser context recreate.
     CustomOptional<bool> FfxDenoiserValidation { false };
 
+    // Transplant diagnostic, 23 Sep: convert a right-handed view space to left-handed before handing the
+    // view/projection matrices to denoiser 1.2 (negate view z, compensate in the projection). Off = pass the
+    // game's matrices through as-is. For settling plan §6b/§6g on screen, not a tuning knob. Runtime-only.
+    CustomOptional<bool> FfxDenoiserFlipViewZ { false };
+
     // Re-encodes roughness before anything consumes it. 1.0 = bit-identical.
     CustomOptional<float> FfxDenoiserRoughnessExponent { 1.0f };
 
