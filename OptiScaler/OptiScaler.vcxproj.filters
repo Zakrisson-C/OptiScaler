@@ -1604,4 +1604,23 @@
     </None>
     <None Include="shaders\magnifier\precompile\Magnifier_Shader_Vk.spv" />
   </ItemGroup>
+  <ItemGroup>
+    <FxCompile Include="shaders\fsrd_preprocess\precompile\FSRDFloor.hlsl">
+      <Filter>Source Files</Filter>
+    </FxCompile>
+    <FxCompile Include="shaders\fsrd_preprocess\precompile\FSRDFloorSeed.hlsl">
+      <Filter>Source Files</Filter>
+    </FxCompile>
+    <FxCompile Include="shaders\fsrd_preprocess\precompile\FSRDInputConv.hlsl">
+      <Filter>Source Files</Filter>
+    </FxCompile>
+    <FxCompile Include="shaders\fsrd_preprocess\precompile\FSRDOutputComp.hlsl">
+      <Filter>Source Files</Filter>
+    </FxCompile>
+  </ItemGroup>
+  <ItemGroup>
+    <None Include="shaders\fsrd_preprocess\precompile\FSRDPreprocessCommon.hlsli">
+      <Filter>Source Files</Filter>
+    </None>
+  </ItemGroup>
 </Project>
