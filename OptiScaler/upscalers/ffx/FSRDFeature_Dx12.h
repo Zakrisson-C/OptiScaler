@@ -89,6 +89,7 @@ class FSRDFeatureDx12 : public FFXFeatureDx12
     bool _isInReset = false; // Was inherited from the fork's FSR31FeatureDx12; master's FFXFeatureDx12 has none
     bool _loggedCameraConvention = false; // One-time camera/projection convention log (23 Sep)
     bool _loggedDiffuseHitDist = false;   // One-time report of whether the game supplies DLSSD.DiffuseHitDistance
+    bool _warnedFfxDebugWithoutFlag = false;
 
     // Create-time options derived from Config (23 Sep). Compared against _denoiserCtxDesc every frame so a
     // menu change recreates the context instead of needing a resolution change.

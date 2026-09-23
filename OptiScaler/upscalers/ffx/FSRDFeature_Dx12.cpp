@@ -571,15 +571,24 @@ void FSRDFeatureDx12::UpdateSize()
         _denoiserCtxDesc.maxRenderSize.width != RenderWidth() ||
         _denoiserCtxDesc.maxRenderSize.height != RenderHeight();
 
-    // 23 Sep: create-time options (signal buckets, debug views, validation) now take effect immediately
+    // 23 Sep: create-time options (signal buckets, debug views, validation) take effect without a
+    // resolution change. Not by destroying the context in place, though: that frees GPU resources
+    // (context, converter buffers) that frames still in flight may be using. Hand it to OptiScaler's
+    // own backend-change path instead, which recreates the whole feature and destroys the old one
+    // on a 2 s delay (Util::DelayedDestroy) - the path already seen working for FSR-RR in the logs.
     const bool optionsChanged =
         _denoiserCtxDesc.signalFlags != DesiredSignalFlags() || _denoiserCtxDesc.flags != DesiredCreateFlags();
 
     if (optionsChanged && !sizeChanged)
     {
-        LOG_INFO("Reinitializing FSR-RR for create-time option change");
-        DestroyDenoiserContext();
-        CreateDenoiserContext();
+        auto& state = State::Instance();
+
+        if (!state.changeBackend[Handle()->Id])
+        {
+            LOG_INFO("FSR-RR create-time option changed, recreating the feature");
+            state.newBackend = Upscaler::FSRD;
+            state.changeBackend[Handle()->Id] = true;
+        }
     }
     else if (sizeChanged)
     {
@@ -649,7 +658,20 @@ bool FSRDFeatureDx12::EvaluateInternal(ID3D12GraphicsCommandList* InCommandList,
     {
         ffxDispatchDescDenoiserDebugView dispatchDebugView = {};
 
-        if (isFfxDebug)
+        // 23 Sep: only chain the SDK debug view into a context that was created with
+        // FFX_DENOISER_ENABLE_DEBUGGING. Selecting the FfxDebug mode without the "FSR-RR Debug Views"
+        // checkbox (or before the context had been recreated with it) sent a debug-view desc to a
+        // non-debug context - the likely cause of the crash reported on 17c0ee85.
+        const bool ctxHasDebugging = (_denoiserCtxDesc.flags & FFX_DENOISER_ENABLE_DEBUGGING) != 0;
+
+        if (isFfxDebug && !ctxHasDebugging && !_warnedFfxDebugWithoutFlag)
+        {
+            _warnedFfxDebugWithoutFlag = true;
+            LOG_WARN("FfxDebug view selected but the denoiser context has no debugging enabled - "
+                     "tick \"FSR-RR Debug Views\" (skipping the debug view until then)");
+        }
+
+        if (isFfxDebug && ctxHasDebugging)
         {
             // Append rather than overwrite. The previous line clobbered whatever was already
             // chained at that node; harmless while this path never executed, not harmless now.
