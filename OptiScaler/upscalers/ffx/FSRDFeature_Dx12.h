@@ -1,6 +1,7 @@
 #pragma once
 #include "FFXFeature_Dx12.h"
 #include "shaders/fsrd_preprocess/FSRDPreprocessor_Dx12.h"
+#include "fsr-rr/ffx_denoiser.h"
 #include <DirectXMath.h>
 
 /**

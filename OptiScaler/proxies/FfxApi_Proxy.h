@@ -17,6 +17,7 @@
 #include <detours/detours.h>
 #include <ffx_framegeneration.h>
 #include <ffx_upscale.h>
+#include "fsr-rr/ffx_denoiser.h"
 
 #include <magic_enum.hpp>
 
