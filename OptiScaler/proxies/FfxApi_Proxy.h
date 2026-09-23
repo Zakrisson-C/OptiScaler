@@ -1097,6 +1097,12 @@ class FfxApiProxy
             // comparison with VersionTarget_RR() then fails and NGX reports DLSS-RR unavailable
             // (greyed out in game). The fork queried the denoiser's own desc type, as here.
             versionQuery.createDescType = FFX_API_CREATE_CONTEXT_DESC_TYPE_DENOISER;
+            // Second half of the same fix (23 Sep, confirmed by an in-game log showing "Query result: 0"
+            // with zero versions even for the DENOISER type): the denoiser module only enumerates its
+            // versions when given a D3D12 device, unless a context already exists. The fork did this
+            // too, with Zach's note: "Newer effects like FSR Ray Regen seem to require a D3D12 device
+            // if an ffxContext hasn't already been created."
+            versionQuery.device = State::Instance().currentD3D12Device;
             uint64_t versionCount = 0;
             versionQuery.outputCount = &versionCount;
 
