@@ -1091,7 +1091,12 @@ class FfxApiProxy
         {
             ffxQueryDescGetVersions versionQuery {};
             versionQuery.header.type = FFX_API_QUERY_DESC_TYPE_GET_VERSIONS;
-            versionQuery.createDescType = FFX_API_CREATE_CONTEXT_DESC_TYPE_UPSCALE;
+            // Transplant fix, 23 Sep: master asked the denoiser module for the *upscaler's* versions
+            // (CREATE_CONTEXT_DESC_TYPE_UPSCALE, apparently copied from VersionDx12_SR). The denoiser
+            // DLL has no upscaler provider, so it can't report its own version for that type; the
+            // comparison with VersionTarget_RR() then fails and NGX reports DLSS-RR unavailable
+            // (greyed out in game). The fork queried the denoiser's own desc type, as here.
+            versionQuery.createDescType = FFX_API_CREATE_CONTEXT_DESC_TYPE_DENOISER;
             uint64_t versionCount = 0;
             versionQuery.outputCount = &versionCount;
 
@@ -1114,7 +1119,7 @@ class FfxApiProxy
                 if (queryResult == FFX_API_RETURN_OK)
                 {
                     denoiser_dx12.version.parse_version(versionNames[0]);
-                    LOG_INFO("FfxApi Dx12 SR version: {}.{}.{}", denoiser_dx12.version.major,
+                    LOG_INFO("FfxApi Dx12 RR version: {}.{}.{}", denoiser_dx12.version.major,
                              denoiser_dx12.version.minor, denoiser_dx12.version.patch);
                 }
                 else
