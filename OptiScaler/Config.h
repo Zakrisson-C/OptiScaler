@@ -512,6 +512,13 @@ class Config
     // game's matrices through as-is. For settling plan §6b/§6g on screen, not a tuning knob. Runtime-only.
     CustomOptional<bool> FfxDenoiserFlipViewZ { false };
 
+    // Transplant, 23 Sep: which denoiser 1.2 signal bucket each demodulated channel is handed to. DLSS-RR's
+    // input is the full composite (direct + indirect lighting); 1.1's Mode 2 took it as fused specular/diffuse,
+    // 1.2 has no fused bucket. Indirect buckets require a valid ray hit distance in alpha (we only have one for
+    // specular); direct buckets ignore alpha. Create-time: changing these recreates the denoiser context.
+    CustomOptional<bool> FfxDenoiserDiffuseAsDirect { true };   // false = INDIRECT_DIFFUSE (alpha 0 = invalid hitT)
+    CustomOptional<bool> FfxDenoiserSpecularAsDirect { false }; // true = DIRECT_SPECULAR (no hit-distance reprojection)
+
     // Re-encodes roughness before anything consumes it. 1.0 = bit-identical.
     CustomOptional<float> FfxDenoiserRoughnessExponent { 1.0f };
 

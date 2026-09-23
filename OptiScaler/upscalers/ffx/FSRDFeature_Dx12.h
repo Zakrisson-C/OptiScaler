@@ -21,7 +21,8 @@
  *
  * Phase 3 note (transplant, 22 Sep): denoiser 1.2 has no "Mode 1" (single combined signal) concept -
  * see the transplant plan §6e/6f. Mode 1 is removed outright (Chris's call, not preserved as a
- * preset); the shim now always dispatches the split indirect-diffuse/indirect-specular signals.
+ * preset); the shim now always dispatches two split signals, diffuse and specular. (23 Sep: which
+ * 1.2 bucket each goes to - DIRECT or INDIRECT - is selectable, see DesiredSignalFlags().)
  */
 class FSRDFeatureDx12 : public FFXFeatureDx12
 {
@@ -87,6 +88,12 @@ class FSRDFeatureDx12 : public FFXFeatureDx12
     FSRDConvDesc _convDesc;
     bool _isInReset = false; // Was inherited from the fork's FSR31FeatureDx12; master's FFXFeatureDx12 has none
     bool _loggedCameraConvention = false; // One-time camera/projection convention log (23 Sep)
+    bool _loggedDiffuseHitDist = false;   // One-time report of whether the game supplies DLSSD.DiffuseHitDistance
+
+    // Create-time options derived from Config (23 Sep). Compared against _denoiserCtxDesc every frame so a
+    // menu change recreates the context instead of needing a resolution change.
+    static uint32_t DesiredSignalFlags();
+    static uint32_t DesiredCreateFlags();
 
     DirectX::XMFLOAT3 _lastCamPos; // Last world space camera position
 

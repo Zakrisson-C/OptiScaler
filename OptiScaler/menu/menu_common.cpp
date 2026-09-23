@@ -3205,6 +3205,24 @@ void MenuCommon::RenderActiveUpscalerSettings(RenderMenuContext& ctx)
                                    "Needs a denoiser context recreate to take effect.");
                 }
 
+                bool diffDirect = config->FfxDenoiserDiffuseAsDirect.value_or_default();
+                if (ImGui::Checkbox("Diffuse as Direct signal", &diffDirect))
+                    config->FfxDenoiserDiffuseAsDirect = diffDirect;
+                ShowHelpMarker("Denoiser 1.2 bucket for the diffuse channel.\n"
+                               "On (default): DIRECT_DIFFUSE - needs no hit distance.\n"
+                               "Off: INDIRECT_DIFFUSE - expects a diffuse ray hit\n"
+                               "distance, which the game doesn't give us (sent as 0).\n"
+                               "Recreates the denoiser context.");
+
+                bool specDirect = config->FfxDenoiserSpecularAsDirect.value_or_default();
+                if (ImGui::Checkbox("Specular as Direct signal", &specDirect))
+                    config->FfxDenoiserSpecularAsDirect = specDirect;
+                ShowHelpMarker("Denoiser 1.2 bucket for the specular channel.\n"
+                               "Off (default): INDIRECT_SPECULAR - uses the specular hit\n"
+                               "distance to reproject reflections (virtual motion).\n"
+                               "On: DIRECT_SPECULAR - ignores hit distance, reflections\n"
+                               "follow surface motion. Recreates the denoiser context.");
+
                 bool flipViewZ = config->FfxDenoiserFlipViewZ.value_or_default();
                 if (ImGui::Checkbox("Flip View Z (RH -> LH)", &flipViewZ))
                     config->FfxDenoiserFlipViewZ = flipViewZ;

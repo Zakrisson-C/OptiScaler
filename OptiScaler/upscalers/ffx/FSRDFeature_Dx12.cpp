@@ -380,6 +380,41 @@ bool FSRDFeatureDx12::InitFFX(const NVSDK_NGX_Parameter* InParameters)
     return false;
 }
 
+uint32_t FSRDFeatureDx12::DesiredSignalFlags()
+{
+    // Transplant fix, 23 Sep. Phase 3 (plan §6e) mapped the shim's two demodulated channels to the INDIRECT
+    // buckets on the reasoning that RR exists for ray-traced/GI content. But DLSS-RR's input is the whole
+    // path-traced composite - direct lighting, contact shadows and all - and 1.1's Mode 2 took it as fused
+    // (direct+indirect) specular/diffuse. 1.2 has no fused bucket. Worse, 1.2's indirect buckets read a ray
+    // hit distance from alpha ("must be valid if the signal is active"); the shim has one for specular only
+    // and writes 0 for diffuse, which tells the denoiser every diffuse ray hit something at zero distance.
+    // Direct buckets ignore alpha. Default: diffuse -> DIRECT, specular -> INDIRECT (keeps hit-distance
+    // reprojection for reflections). Both switchable from the menu for comparison.
+    const auto& cfg = *Config::Instance();
+
+    uint32_t flags = cfg.FfxDenoiserDiffuseAsDirect.value_or_default() ? FFX_DENOISER_SIGNAL_DIRECT_DIFFUSE
+                                                                     : FFX_DENOISER_SIGNAL_INDIRECT_DIFFUSE;
+    flags |= cfg.FfxDenoiserSpecularAsDirect.value_or_default() ? FFX_DENOISER_SIGNAL_DIRECT_SPECULAR
+                                                                : FFX_DENOISER_SIGNAL_INDIRECT_SPECULAR;
+    return flags;
+}
+
+uint32_t FSRDFeatureDx12::DesiredCreateFlags()
+{
+    const auto& cfg = *Config::Instance();
+    uint32_t flags = 0;
+
+    // FFX_DENOISER_ENABLE_DEBUGGING is a runtime create flag the SDK honours in any build (see CreateDenoiserContext).
+    if (cfg.FfxDenoiserFsrDebugViews.value_or_default())
+        flags |= FFX_DENOISER_ENABLE_DEBUGGING;
+
+    // Plan §6a: bit 1 was ENABLE_DOMINANT_LIGHT in 1.1, ENABLE_VALIDATION in 1.2.
+    if (cfg.FfxDenoiserValidation.value_or_default())
+        flags |= FFX_DENOISER_ENABLE_VALIDATION;
+
+    return flags;
+}
+
 bool FSRDFeatureDx12::CreateDenoiserContext() 
 {
     ScopedSkipSpoofingGlobal skipSpoofingGlobal {};
@@ -424,10 +459,14 @@ bool FSRDFeatureDx12::CreateDenoiserContext()
         },
         .version = FFX_DENOISER_VERSION,
         .maxRenderSize = { RenderWidth(), RenderHeight() },
-        .signalFlags = FFX_DENOISER_SIGNAL_INDIRECT_DIFFUSE | FFX_DENOISER_SIGNAL_INDIRECT_SPECULAR,
+        .signalFlags = DesiredSignalFlags(),
         .checkerboardSignalFlags = 0,
-        .flags = 0
+        .flags = DesiredCreateFlags()
     };
+
+    LOG_INFO("FSR-RR signals: diffuse -> {}, specular -> {}",
+             (_denoiserCtxDesc.signalFlags & FFX_DENOISER_SIGNAL_DIRECT_DIFFUSE) ? "DIRECT_DIFFUSE" : "INDIRECT_DIFFUSE",
+             (_denoiserCtxDesc.signalFlags & FFX_DENOISER_SIGNAL_DIRECT_SPECULAR) ? "DIRECT_SPECULAR" : "INDIRECT_SPECULAR");
 
     // FFX_DENOISER_ENABLE_DEBUGGING is a runtime create flag the SDK honours in any build.
     // It was previously wrapped in OptiScaler's own #ifdef _DEBUG, which kept FSR-RR's own
@@ -435,21 +474,15 @@ bool FSRDFeatureDx12::CreateDenoiserContext()
     // Release. Virtual Hit Pos is the only view that shows the END of the
     // DLSS -> shim -> FSR-RR chain, so it is what settles hit-distance units and camera
     // parameters; InSpecHitDist only ever showed what the shim received.
-    if (Config::Instance()->FfxDenoiserFsrDebugViews.value_or_default())
-    {
+    if (_denoiserCtxDesc.flags & FFX_DENOISER_ENABLE_DEBUGGING)
         LOG_INFO("FSR-RR denoiser debug views enabled (increases memory use)");
-        _denoiserCtxDesc.flags |= FFX_DENOISER_ENABLE_DEBUGGING;
-    }
 
     // Transplant, 22 Sep (plan §6a/§7): bit 1 was FFX_DENOISER_ENABLE_DOMINANT_LIGHT in the 1.1 SDK
     // this fork shipped against; 1.2 repurposes it to FFX_DENOISER_ENABLE_VALIDATION -- exhaustive
     // internal validation of denoiser inputs, the single most valuable diagnostic this migration
     // unlocks. Exposed as its own menu toggle (menu_common.cpp) alongside FSR-RR Debug Views.
-    if (Config::Instance()->FfxDenoiserValidation.value_or_default())
-    {
+    if (_denoiserCtxDesc.flags & FFX_DENOISER_ENABLE_VALIDATION)
         LOG_INFO("FSR-RR denoiser validation enabled");
-        _denoiserCtxDesc.flags |= FFX_DENOISER_ENABLE_VALIDATION;
-    }
 
     // Create the denoiser context
     {   
@@ -534,11 +567,21 @@ void FSRDFeatureDx12::UpdateSize()
 {
     // FSR-RR doesn't currently have proper DRS support. The example implementation 
     // reinits on resolution change as well.
-    const bool needsReInit = 
+    const bool sizeChanged = 
         _denoiserCtxDesc.maxRenderSize.width != RenderWidth() ||
         _denoiserCtxDesc.maxRenderSize.height != RenderHeight();
 
-    if (needsReInit)
+    // 23 Sep: create-time options (signal buckets, debug views, validation) now take effect immediately
+    const bool optionsChanged =
+        _denoiserCtxDesc.signalFlags != DesiredSignalFlags() || _denoiserCtxDesc.flags != DesiredCreateFlags();
+
+    if (optionsChanged && !sizeChanged)
+    {
+        LOG_INFO("Reinitializing FSR-RR for create-time option change");
+        DestroyDenoiserContext();
+        CreateDenoiserContext();
+    }
+    else if (sizeChanged)
     {
         LOG_INFO(
             "Reinitializing FSR-RR for resolution change. "
@@ -812,6 +855,18 @@ bool FSRDFeatureDx12::PrepareDenoiserInput(ID3D12GraphicsCommandList* InCommandL
     // indirectDiffuseSignal (see FSRDPreprocessor_Dx12::GetSignal).
     FSRDConvShader->GetSignal(indirectDiffuseSignal, indirectSpecularSignal, dispatchDesc);
 
+    // Retag to the buckets the context was created with (23 Sep, see DesiredSignalFlags). The direct and
+    // indirect per-signal structs are layout-identical ({ header, FfxApiDenoiserSignal }), only the type differs.
+    static_assert(sizeof(ffxDispatchDescDenoiserDirectDiffuse) == sizeof(ffxDispatchDescDenoiserIndirectDiffuse));
+    static_assert(sizeof(ffxDispatchDescDenoiserDirectSpecular) == sizeof(ffxDispatchDescDenoiserIndirectSpecular));
+    static_assert(offsetof(ffxDispatchDescDenoiserDirectDiffuse, signal) == offsetof(ffxDispatchDescDenoiserIndirectDiffuse, signal));
+    static_assert(offsetof(ffxDispatchDescDenoiserDirectSpecular, signal) == offsetof(ffxDispatchDescDenoiserIndirectSpecular, signal));
+
+    if (_denoiserCtxDesc.signalFlags & FFX_DENOISER_SIGNAL_DIRECT_DIFFUSE)
+        indirectDiffuseSignal.header.type = FFX_API_DISPATCH_DESC_TYPE_DENOISER_DIRECT_DIFFUSE;
+    if (_denoiserCtxDesc.signalFlags & FFX_DENOISER_SIGNAL_DIRECT_SPECULAR)
+        indirectSpecularSignal.header.type = FFX_API_DISPATCH_DESC_TYPE_DENOISER_DIRECT_SPECULAR;
+
     if (_isInReset)
         dispatchDesc.flags |= FFX_DENOISER_DISPATCH_RESET;
 
@@ -881,6 +936,16 @@ bool FSRDFeatureDx12::PrepareDenoiseConvInput(const NVSDK_NGX_Parameter& inParam
     // Optional. Specular hit distance can be used with mode-2 denoising to track movement inside reflections, 
     // in addition to primary motion tracking for the surface and camera.
     TryGetLoggedResource(inParams, NVSDK_NGX_Parameter_DLSSD_SpecularHitDistance, _convDesc.Resources.InSpecHitDist);
+
+    // 23 Sep: not consumed yet. Reported once so we know whether INDIRECT_DIFFUSE could be fed a real hit distance.
+    if (!_loggedDiffuseHitDist)
+    {
+        _loggedDiffuseHitDist = true;
+        ID3D12Resource* diffHitDist = nullptr;
+        const bool hasDiffHitDist =
+            TryGetNGXVoidPointer(inParams, NVSDK_NGX_Parameter_DLSSD_DiffuseHitDistance, diffHitDist) && diffHitDist;
+        LOG_INFO("Game supplies DLSSD.DiffuseHitDistance: {}", hasDiffHitDist ? "yes" : "no");
+    }
     
     // Get DLSSD matrices and derive related values
     // World to view/camera space (V)
