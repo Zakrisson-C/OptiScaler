@@ -5,6 +5,7 @@
 #include "NVNGX_DLSS.h"
 #include "NVNGX_Parameter.h"
 #include "proxies/NVNGX_Proxy.h"
+#include "proxies/FfxApi_Proxy.h" // FSR-RR support report in GetFeatureRequirements (as on the fork)
 
 #include <upscalers/FeatureProvider_Dx12.h>
 #include "upscalers/dlss/DLSSFeature_Dx12.h"
@@ -902,7 +903,30 @@ NVSDK_NGX_API NVSDK_NGX_Result NVSDK_NGX_D3D12_GetFeatureRequirements(
     const bool isFG = FeatureDiscoveryInfo->FeatureID == NVSDK_NGX_Feature_FrameGeneration;
     const bool dlssgAdjacent = Nvngx_FG::isDx12Available() || State::Instance().activeFgInput == FGInput::DLSSG;
 
-    if (isUpscaling || (isFG && dlssgAdjacent))
+    // FSR Ray Regeneration support report (transplant fix, 23 Sep - ported from the fork's own
+    // GetFeatureRequirements, missed in Phase 4f). Without it, feature 13 (RayReconstruction) falls
+    // through to the "not available" path below on non-Nvidia GPUs, Streamline's sl.dlss_d plugin
+    // registers with adapter mask 0x0, and the game greys out Ray Reconstruction even though
+    // InitNGXParameters reports SuperSamplingDenoising.Available. Zach's note from the fork: this
+    // runs before the D3D12 device is captured, so it can only check that the SR and denoiser
+    // modules are loaded; the full version check happens later in InitNGXParameters. It only lets
+    // the game get as far as reading those parameters instead of failing early.
+    bool isFsrRR = false;
+    if (FeatureDiscoveryInfo->FeatureID == NVSDK_NGX_Feature_RayReconstruction &&
+        !IdentifyGpu::getPrimaryGpu().dlssCapable)
+    {
+        if (!FfxApiProxy::IsDenoiserReady(false))
+            FfxApiProxy::InitFfxDx12();
+
+        isFsrRR = FfxApiProxy::IsSRReady(false) && FfxApiProxy::IsDenoiserReady(false);
+
+        if (isFsrRR)
+            LOG_DEBUG("Reporting support for DLSSD -> FSR Ray Regeneration");
+        else
+            LOG_DEBUG("DLSSD -> FSR Ray Regeneration not supported");
+    }
+
+    if (isUpscaling || isFsrRR || (isFG && dlssgAdjacent))
     {
         if (OutSupported == nullptr)
         {
