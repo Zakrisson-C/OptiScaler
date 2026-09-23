@@ -1136,9 +1136,10 @@ class FfxApiProxy
     // upscaler's own readiness checks work elsewhere in this class.
     static feature_version VersionTarget_RR()
     {
-        return { .major = FFX_DENOISER_VERSION_MAJOR,
-                .minor = FFX_DENOISER_VERSION_MINOR,
-                .patch = FFX_DENOISER_VERSION_PATCH };
+        // feature_version has user-declared constructors on master (not an aggregate, unlike the
+        // fork's), so the fork's designated-initializer form no longer compiles (MSVC C2440).
+        return feature_version(FFX_DENOISER_VERSION_MAJOR, FFX_DENOISER_VERSION_MINOR,
+                               FFX_DENOISER_VERSION_PATCH);
     }
 
     static feature_version VersionDx12_RC()

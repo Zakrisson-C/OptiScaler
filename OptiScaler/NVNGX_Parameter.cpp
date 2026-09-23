@@ -12,7 +12,6 @@
 // fallback both need these.
 #include "proxies/FfxApi_Proxy.h"
 #include "hooks/Streamline_Hooks.h"
-#include "OptiTexts.h"
 
 /// @brief Calculates the resolution scaling ratio override based on the provided quality level and current
 /// configuration.

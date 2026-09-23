@@ -80,6 +80,8 @@ class FSRDFeatureDx12 : public FFXFeatureDx12
     static bool s_isRoughnessPacked;
 
     FSRDConvDesc _convDesc;
+    bool _isInReset = false; // Was inherited from the fork's FSR31FeatureDx12; master's FFXFeatureDx12 has none
+
     DirectX::XMFLOAT3 _lastCamPos; // Last world space camera position
 
     // Matrices
