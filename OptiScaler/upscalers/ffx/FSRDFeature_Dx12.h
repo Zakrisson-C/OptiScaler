@@ -113,6 +113,11 @@ class FSRDFeatureDx12 : public FFXFeatureDx12
 
     DirectX::XMFLOAT3 _lastCamPos; // Last world space camera position
 
+    // Denoiser frame index, advanced exactly once per EvaluateInternal() call. _frameCount can't be used:
+    // FFXFeatureDx12::EvaluateInternal() advances it as well, so it moves by 2 per frame whenever the
+    // upscaler runs, and 1.2 resets its history on every frame index jump.
+    uint32_t _denoiserFrameIndex = 0;
+
     // Matrices
     DirectX::XMMATRIX _invViewMatrix;  // Camera rotation and translation
     DirectX::XMMATRIX _viewMatrix;     // World to camera space

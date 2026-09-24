@@ -664,6 +664,10 @@ bool FSRDFeatureDx12::EvaluateInternal(ID3D12GraphicsCommandList* InCommandList,
     auto& cfg = *Config::Instance();
     const auto& inParams = *InParameters;
 
+    // 24 Sep: one step per game frame, whatever path this frame takes, so a frame on which the denoiser
+    // doesn't run (bypass views, a failed conversion) still shows up as a jump and resets its history.
+    _denoiserFrameIndex++;
+
     UpdateSize();
 
     const auto dbgMode = static_cast<DebugModes>(cfg.FfxDenoiserDebugMode.value_or_default());
@@ -890,7 +894,10 @@ bool FSRDFeatureDx12::PrepareDenoiserInput(ID3D12GraphicsCommandList* InCommandL
                      // ConvertDenoiserBuffers() just above).
                      .linearDepthBounds = { .min = _convDesc.NearPlane, .max = _convDesc.FarPlane },
                      .renderSize = { RenderWidth(), RenderHeight() },
-                     .frameIndex = (uint32_t) _frameCount,
+                     // 24 Sep: was (uint32_t) _frameCount, which advances twice per frame (see
+                     // _denoiserFrameIndex): 'Frame index jump detected. Resetting...' on every
+                     // dispatch, i.e. no temporal accumulation at all.
+                     .frameIndex = _denoiserFrameIndex,
                      .flags = FFX_DENOISER_DISPATCH_NON_GAMMA_ALBEDO };
 
     // World-to-view and (unjittered) view-to-projection matrices.
