@@ -2799,14 +2799,14 @@ std::vector<FsrdAbSwitch> FsrdAbSwitches(Config* config)
           "Audit finding 10. Uses the SDK's own values for the six tuning\n"
           "sliders at the top instead of forcing the sliders' values.\n"
           "Diagnostics > Denoiser tuning lists both." },
-        { "Object-motion depth delta", &config->FfxDenoiserAbObjectDepthDelta,
-          "The depth change sent with the motion vectors assumes a static world.\n"
-          "For anything that moves by itself - the car you drive, traffic,\n"
-          "people - it is off by that object's own movement (0.33 m per frame at\n"
-          "72 km/h), and the denoiser's depth test throws its history away.\n"
-          "This takes it from last frame's depth instead, only where the game's\n"
-          "motion disagrees with the camera (MotionConsistency lit). Try with the\n"
-          "disocclusion threshold back near 0.05." },
+        { "Old depth delta (camera only)", &config->FfxDenoiserAbCameraDepthDelta,
+          "The fix, kept for comparison. The depth change sent with the motion\n"
+          "vectors used to assume a static world, so for anything moving by\n"
+          "itself - the car you drive, traffic, people - it was off by that\n"
+          "object's own movement (0.33 m per frame at 72 km/h) and the denoiser\n"
+          "threw its history away. It now comes from last frame's depth where the\n"
+          "game's motion disagrees with the camera (MotionConsistency lit).\n"
+          "Ticking this brings the old delta back." },
         { "Old frame index (resets every frame)", &config->FfxDenoiserAbFrameIndexDoubled,
           "The transplant's bug, kept for comparison. The frame index handed to\n"
           "the denoiser advanced by 2 per frame (the upscaler's evaluate counts a\n"

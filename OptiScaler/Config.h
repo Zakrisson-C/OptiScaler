@@ -574,8 +574,9 @@ class Config
     CustomOptional<bool> FfxDenoiserAbAlbedo16 { false };
     CustomOptional<bool> FfxDenoiserAbSdkDefaults { false };
     CustomOptional<bool> FfxDenoiserAbFrameIndexDoubled { false };
-    // ObjectDepthDelta (24 Sep): depth delta from last frame's depth on pixels that move by themselves.
-    CustomOptional<bool> FfxDenoiserAbObjectDepthDelta { false };
+    // CameraDepthDelta (25 Sep): the old camera-only depth delta. The object-motion delta (last frame's
+    // depth on pixels that move by themselves) is the default since Chris confirmed it while driving.
+    CustomOptional<bool> FfxDenoiserAbCameraDepthDelta { false };
 
     // Keys: flip FfxDenoiserAbActive, and toggle between no debug view and the last one used.
     CustomOptional<int> FfxDenoiserAbShortcutKey { UnboundKey };

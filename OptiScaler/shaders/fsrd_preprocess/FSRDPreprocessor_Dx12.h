@@ -42,7 +42,7 @@ class FSRDPreprocessor_Dx12
         AbSoftMinNonNeg = 1 << 9,     // Clamp the soft-min floor at zero (finding 1)
         AbSkipAlphaFinal = 1 << 10,   // SkipSignal alpha from the final floor (finding 2)
         AbSkippedInactive = 1 << 11,  // Skipped pixels sent as inactive, alpha -1 (finding 6)
-        AbObjectDepthDelta = 1 << 12, // Depth delta from last frame's depth on self-moving pixels
+        AbCameraDepthDelta = 1 << 12, // Old camera-only depth delta (object-motion delta is the default)
 
         Debug = 1 << 16, // Denoiser and upscaler bypassed for debug out if this is set
         DebugModeMask = 0xFF << 16,

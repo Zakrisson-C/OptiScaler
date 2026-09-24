@@ -22,8 +22,9 @@ static const uint2 s_ThreadGroupSize = uint2(THREAD_GROUP_SIZE_X, THREAD_GROUP_S
 // unconditional - denoiser 1.2 has no combined-signal shape left to select away from.
 #define FLAGS_HAS_BIAS_MASK             (1 << 4)
 
-// Troubleshooting (24 Sep). All off by default: a clear bit reproduces the previous behaviour
-// exactly. The FLAGS_AB_* bits are the A/B switches for the pipeline audit's findings.
+// Troubleshooting (24 Sep). All off by default. The FLAGS_AB_* bits are the A/B switches for the
+// pipeline audit's findings: most try a candidate fix (a clear bit reproduces the previous behaviour
+// exactly); FLAGS_AB_CAMERA_DEPTH_DELTA instead restores the behaviour a confirmed fix replaced.
 #define FLAGS_PROBE                     (1 << 5)  // Write pixel probe records to OutProbe
 #define FLAGS_AB_NO_EMISSIVE            (1 << 6)  // Never reinterpret a pixel as emissive
 #define FLAGS_AB_GATE_NO_ROUGHNESS      (1 << 7)  // Hit distance gate ignores roughness (finding 7)
@@ -31,7 +32,7 @@ static const uint2 s_ThreadGroupSize = uint2(THREAD_GROUP_SIZE_X, THREAD_GROUP_S
 #define FLAGS_AB_SOFTMIN_NONNEG         (1 << 9)  // Clamp the soft-min floor at zero (finding 1)
 #define FLAGS_AB_SKIP_ALPHA_FINAL       (1 << 10) // SkipSignal alpha from the final floor (finding 2)
 #define FLAGS_AB_SKIPPED_INACTIVE       (1 << 11) // Skipped pixels sent as inactive, alpha -1 (finding 6)
-#define FLAGS_AB_OBJECT_DEPTH_DELTA     (1 << 12) // Depth delta from last frame's depth on self-moving pixels
+#define FLAGS_AB_CAMERA_DEPTH_DELTA     (1 << 12) // Old camera-only depth delta (no object-motion delta)
 
 // Debug Flags
 #define FLAGS_DEBUG                     (1 << 16)
@@ -90,7 +91,7 @@ Texture2D<half> InBiasMask : register(t8);
 Texture2D<half4> InFloorColor : register(t9);
 
 // Last frame's linear depth, for the object-motion depth delta (24 Sep). Read only with
-// FLAGS_AB_OBJECT_DEPTH_DELTA.
+// FLAGS_AB_CAMERA_DEPTH_DELTA clear (the default since 25 Sep).
 Texture2D<float> InPrevLinearDepth : register(t10);
 
 // FSR-RR - ffxDispatchDescDenoiserIndirectSpecular / ffxDispatchDescDenoiserIndirectDiffuse
@@ -412,7 +413,8 @@ void CSMain(uint3 groupID : SV_GroupID, uint3 gtID : SV_GroupThreadID)
 
     float depthDelta = (prevViewSpacePos.z - viewSpacePos.z);
 
-    // A/B (24 Sep): object-motion depth delta. The delta above treats every pixel as static
+    // Object-motion depth delta (24 Sep; default since 25 Sep, confirmed by Chris while driving - the
+    // A/B switch now restores the camera-only delta). The delta above treats every pixel as static
     // geometry seen from a moving camera. For anything that moves by itself it is wrong by that
     // object's own displacement - in a chase camera the driven car sits still on screen while this
     // reports the camera's v*dt, and the denoiser's depth test then rejects the car's history.
@@ -421,7 +423,7 @@ void CSMain(uint3 groupID : SV_GroupID, uint3 gtID : SV_GroupThreadID)
     // pixels keep the camera-model delta, so background revealed behind a moving object still
     // fails the depth test (no ghosting there); a self-moving pixel's own newly exposed side can
     // pass it.
-    if (IsSet(FLAGS_AB_OBJECT_DEPTH_DELTA))
+    if (!IsSet(FLAGS_AB_CAMERA_DEPTH_DELTA))
     {
         const float2 prevUV = pixelUV + motionIn;
 

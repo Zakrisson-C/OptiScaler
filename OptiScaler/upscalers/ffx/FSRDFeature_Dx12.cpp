@@ -1167,7 +1167,7 @@ bool FSRDFeatureDx12::ConvertDenoiserBuffers(ID3D12GraphicsCommandList* InComman
         _convDesc.Flags |= AbFlag(cfg.FfxDenoiserAbSoftMinNonNeg, FSRDConvFlags::AbSoftMinNonNeg);
         _convDesc.Flags |= AbFlag(cfg.FfxDenoiserAbSkipAlphaFinal, FSRDConvFlags::AbSkipAlphaFinal);
         _convDesc.Flags |= AbFlag(cfg.FfxDenoiserAbSkippedInactive, FSRDConvFlags::AbSkippedInactive);
-        _convDesc.Flags |= AbFlag(cfg.FfxDenoiserAbObjectDepthDelta, FSRDConvFlags::AbObjectDepthDelta);
+        _convDesc.Flags |= AbFlag(cfg.FfxDenoiserAbCameraDepthDelta, FSRDConvFlags::AbCameraDepthDelta);
         _convDesc.FloorNoAlias = abActive && cfg.FfxDenoiserAbFloorNoAlias.value_or_default();
 
         // Pixel probe
