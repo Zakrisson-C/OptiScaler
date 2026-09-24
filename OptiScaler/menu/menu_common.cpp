@@ -2848,7 +2848,7 @@ std::string FsrdBuildReport(Config* config, State& state, const FSRD::ProbeReado
                      FsrdNum(config->FfxDenoiserGaussKernRelax.value_or_default())));
     Line(std::format("Shim sliders: correlation bias {}, floor isolation {}, bias mask {}, detail boost {}, "
                      "normal sharpness {}, albedo guide {}, luma symmetry {}, grazing {}, soft min {}, roughness "
-                     "exponent {}, hit distance scale {}, spec guard {}, split prior {}",
+                     "exponent {}, hit distance scale {}, spec guard {} (fade {}..{}), split prior {}",
                      FsrdNum(config->FfxDenoiserCorrelationBias.value_or_default()),
                      FsrdNum(config->FfxDenoiserFloorIsolation.value_or_default()),
                      FsrdNum(config->FfxDenoiserBiasMaskStrength.value_or_default()),
@@ -2861,6 +2861,8 @@ std::string FsrdBuildReport(Config* config, State& state, const FSRD::ProbeReado
                      FsrdNum(config->FfxDenoiserRoughnessExponent.value_or_default()),
                      FsrdNum(config->FfxDenoiserHitDistScale.value_or_default()),
                      FsrdNum(config->FfxDenoiserFloorSpecGuard.value_or_default()),
+                     FsrdNum(config->FfxDenoiserFloorSpecGuardFadeStart.value_or_default()),
+                     FsrdNum(config->FfxDenoiserFloorSpecGuardFadeEnd.value_or_default()),
                      FsrdNum(config->FfxDenoiserSplitPrior.value_or_default())));
     Line(std::format("Buckets: diffuse as direct {}, specular as direct {}; flip view z {}",
                      config->FfxDenoiserDiffuseAsDirect.value_or_default() ? "on" : "off",
@@ -4084,6 +4086,21 @@ void MenuCommon::RenderActiveUpscalerSettings(RenderMenuContext& ctx)
                 ShowHelpMarker("Pulls the floor off near-mirror surfaces so\n"
                                "reflections stop being routed through SkipSignal\n"
                                "permanently blurred. 0 = unchanged.");
+
+                if (float v = config->FfxDenoiserFloorSpecGuardFadeStart.value_or_default();
+                    ImGui::SliderFloat("Spec Guard Fade Start", &v, 0, 500, "%.1f", ImGuiSliderFlags_Logarithmic))
+                    config->FfxDenoiserFloorSpecGuardFadeStart = v;
+                ShowHelpMarker("Linear depth where the specular guard starts to\n"
+                               "fade out. Full strength nearer than this.\n"
+                               "Read a surface's depth from the probe's\n"
+                               "'Linear depth' row.");
+
+                if (float v = config->FfxDenoiserFloorSpecGuardFadeEnd.value_or_default();
+                    ImGui::SliderFloat("Spec Guard Fade End", &v, 0, 500, "%.1f", ImGuiSliderFlags_Logarithmic))
+                    config->FfxDenoiserFloorSpecGuardFadeEnd = v;
+                ShowHelpMarker("Linear depth beyond which the guard is off, so\n"
+                               "distant windows keep their fog and haze in the\n"
+                               "floor. End <= Start disables the fade.");
 
                 if (float v = config->FfxDenoiserSplitPrior.value_or_default();
                     ImGui::SliderFloat("Split Prior", &v, 0, 1))

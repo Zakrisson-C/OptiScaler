@@ -499,7 +499,9 @@ struct FSRDPreprocessor_Dx12::Impl
                                                 .HitDistScale = desc.HitDistScale,
                                                 .FloorSpecGuard = desc.FloorSpecGuard,
                                                 .SplitPriorStrength = desc.SplitPriorStrength,
-                                                .RoughnessProbe = desc.RoughnessProbe };
+                                                .RoughnessProbe = desc.RoughnessProbe,
+                                                .FloorSpecGuardFadeStart = desc.FloorSpecGuardFadeStart,
+                                                .FloorSpecGuardFadeEnd = desc.FloorSpecGuardFadeEnd };
 
         in.Resources.InBlurColor = m_smoothFloor;
 

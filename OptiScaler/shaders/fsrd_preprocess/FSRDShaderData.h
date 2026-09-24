@@ -170,11 +170,17 @@ struct alignas(16) Constants
     int32_t ProbeCenterY;
     int32_t ProbeRadius;
     uint32_t _Padding2;
+
+    // Specular guard distance fade (24 Sep), linear depth units. FadeEnd <= FadeStart = no fade.
+    float FloorSpecGuardFadeStart;
+    float FloorSpecGuardFadeEnd;
+    float _Padding3[2];
 };
 
 // Matches the cbuffer layout DXC reports for CB_Packing in FSRDInputConv.hlsl.
-static_assert(sizeof(Constants) == 272, "Conversion::Constants out of sync with CB_Packing");
+static_assert(sizeof(Constants) == 288, "Conversion::Constants out of sync with CB_Packing");
 static_assert(offsetof(Constants, ProbeCenterX) == 256, "Conversion::Constants out of sync with CB_Packing");
+static_assert(offsetof(Constants, FloorSpecGuardFadeStart) == 272, "Conversion::Constants out of sync with CB_Packing");
 
 union Input
 {

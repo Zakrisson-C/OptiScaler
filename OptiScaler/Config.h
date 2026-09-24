@@ -531,6 +531,11 @@ class Config
     // Pulls the floor off near-mirror surfaces. 0 = bit-identical.
     CustomOptional<float> FfxDenoiserFloorSpecGuard { 0.0f };
 
+    // Distance fade for the guard (24 Sep), in linear depth units (metres in Cyberpunk): full strength
+    // nearer than start, none beyond end, so distant glass keeps its fog. End <= start = no fade.
+    CustomOptional<float> FfxDenoiserFloorSpecGuardFadeStart { 0.0f };
+    CustomOptional<float> FfxDenoiserFloorSpecGuardFadeEnd { 0.0f };
+
     // Biases the Mode 2 split toward specular on smooth surfaces. 0 = bit-identical.
     // Contingent on the signal-delta view confirming the split is degenerate.
     CustomOptional<float> FfxDenoiserSplitPrior { 0.0f };

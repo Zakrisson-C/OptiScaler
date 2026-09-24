@@ -155,6 +155,12 @@ cbuffer CB_Packing : register(b0)
     int2 ProbeCenter;
     int ProbeRadius;
     uint _Padding2;
+
+    // Distance fade for the specular guard (24 Sep), in linear depth units. Full strength nearer
+    // than FadeStart, none beyond FadeEnd. FadeEnd <= FadeStart disables the fade (bit-identical).
+    float FloorSpecGuardFadeStart;
+    float FloorSpecGuardFadeEnd;
+    float2 _Padding3;
 };
 
 bool IsSet(uint mask) { return (Flags & mask) == mask; }
@@ -301,7 +307,18 @@ void CSMain(uint3 groupID : SV_GroupID, uint3 gtID : SV_GroupThreadID)
     // content is confirmed present in FloorColor on the Type-66. The usual cost of pulling
     // the floor off a surface - imprinting returning - is smallest precisely here, because a
     // polished panel's albedo is near-uniform.
-    floorColor.rgb *= lerp(1.0f, smoothstep(0.05f, 0.25f, surfaceRoughness), FloorSpecGuard);
+    //
+    // 24 Sep: faded out with distance. Far away, the floor also carries the fog and haze composited
+    // over the surface; pulling it off a distant window sends that through the denoiser with the
+    // reflection, and in game the window punches through the fog (the exact route through the
+    // denoiser is not established; the probe can show it). InDepth here is the
+    // floor seed's linear depth, the same value GetViewSpacePos uses.
+    float specGuard = FloorSpecGuard;
+
+    if (FloorSpecGuardFadeEnd > FloorSpecGuardFadeStart)
+        specGuard *= 1.0f - smoothstep(FloorSpecGuardFadeStart, FloorSpecGuardFadeEnd, abs(InDepth[px]));
+
+    floorColor.rgb *= lerp(1.0f, smoothstep(0.05f, 0.25f, surfaceRoughness), specGuard);
 
     // Transparency / bias mask routing
     //

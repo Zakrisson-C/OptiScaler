@@ -181,6 +181,11 @@ class FSRDPreprocessor_Dx12
         // Pulls the floor off near-mirror surfaces. 0 is bit-identical.
         float FloorSpecGuard;
 
+        // Distance fade for the guard, in linear depth units (24 Sep): full strength nearer than
+        // start, none beyond end. End <= start disables the fade.
+        float FloorSpecGuardFadeStart;
+        float FloorSpecGuardFadeEnd;
+
         // Biases the Mode 2 split toward specular on smooth surfaces. 0 is bit-identical.
         float SplitPriorStrength;
 

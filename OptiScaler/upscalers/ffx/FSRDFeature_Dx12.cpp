@@ -1117,6 +1117,8 @@ bool FSRDFeatureDx12::ConvertDenoiserBuffers(ID3D12GraphicsCommandList* InComman
     _convDesc.RoughnessExponent = cfg.FfxDenoiserRoughnessExponent.value_or_default();
     _convDesc.HitDistScale = cfg.FfxDenoiserHitDistScale.value_or_default();
     _convDesc.FloorSpecGuard = cfg.FfxDenoiserFloorSpecGuard.value_or_default();
+    _convDesc.FloorSpecGuardFadeStart = cfg.FfxDenoiserFloorSpecGuardFadeStart.value_or_default();
+    _convDesc.FloorSpecGuardFadeEnd = cfg.FfxDenoiserFloorSpecGuardFadeEnd.value_or_default();
     _convDesc.SplitPriorStrength = cfg.FfxDenoiserSplitPrior.value_or_default();
     _convDesc.RoughnessProbe = cfg.FfxDenoiserRoughnessProbe.value_or_default();
 
