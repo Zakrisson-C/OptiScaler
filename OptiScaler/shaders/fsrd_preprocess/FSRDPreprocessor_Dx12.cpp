@@ -504,6 +504,7 @@ struct FSRDPreprocessor_Dx12::Impl
                                                 .RoughnessProbe = desc.RoughnessProbe,
                                                 .FloorSpecGuardFadeStart = desc.FloorSpecGuardFadeStart,
                                                 .FloorSpecGuardFadeEnd = desc.FloorSpecGuardFadeEnd,
+                                                .FireflyClampK = desc.FireflyClampK,
                                                 .ProjMatrix = desc.ProjMatrix };
 
         in.Resources.InBlurColor = m_smoothFloor;

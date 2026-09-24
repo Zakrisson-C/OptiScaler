@@ -174,7 +174,10 @@ struct alignas(16) Constants
     // Specular guard distance fade (24 Sep), linear depth units. FadeEnd <= FadeStart = no fade.
     float FloorSpecGuardFadeStart;
     float FloorSpecGuardFadeEnd;
-    float _Padding3[2];
+
+    // Firefly clamp (25 Sep): max ratio to the brightest neighbour. 0 = off (bit-identical).
+    float FireflyClampK;
+    float _Padding3;
 
     // Current view to clip, for the motion consistency check (24 Sep). Debug view / probe only.
     XMFLOAT4X4 ProjMatrix;
@@ -184,6 +187,7 @@ struct alignas(16) Constants
 static_assert(sizeof(Constants) == 352, "Conversion::Constants out of sync with CB_Packing");
 static_assert(offsetof(Constants, ProbeCenterX) == 256, "Conversion::Constants out of sync with CB_Packing");
 static_assert(offsetof(Constants, FloorSpecGuardFadeStart) == 272, "Conversion::Constants out of sync with CB_Packing");
+static_assert(offsetof(Constants, FireflyClampK) == 280, "Conversion::Constants out of sync with CB_Packing");
 static_assert(offsetof(Constants, ProjMatrix) == 288, "Conversion::Constants out of sync with CB_Packing");
 
 union Input

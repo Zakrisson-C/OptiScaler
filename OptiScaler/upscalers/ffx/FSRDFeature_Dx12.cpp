@@ -241,6 +241,7 @@ enum class DebugModes : uint64_t
     EmissiveCheck = FSRDConvFlags::DebugEmissiveCheck,         // 24 Sep
     HitGateParts = FSRDConvFlags::DebugHitGateParts,           // 24 Sep
     MotionConsistency = FSRDConvFlags::DebugMotionConsistency, // 24 Sep
+    FireflyClamp = FSRDConvFlags::DebugFireflyClamp,           // 25 Sep
 
     CompositionDebugOffset = 16u,
     CompositionDebug = (uint64_t) FSRDCompFlags::Debug << CompositionDebugOffset,
@@ -315,6 +316,7 @@ constexpr auto kDebugModes = std::to_array<ModeNamePair>({
     { "EmissiveCheck", (uint64_t) DebugModes::EmissiveCheck },
     { "HitGateParts", (uint64_t) DebugModes::HitGateParts },
     { "MotionConsistency", (uint64_t) DebugModes::MotionConsistency },
+    { "FireflyClamp", (uint64_t) DebugModes::FireflyClamp },
 
     { "Signal1", (uint64_t) DebugModes::Signal1 },
     { "Signal2", (uint64_t) DebugModes::Signal2 },
@@ -1148,6 +1150,7 @@ bool FSRDFeatureDx12::ConvertDenoiserBuffers(ID3D12GraphicsCommandList* InComman
     _convDesc.FloorSpecGuard = cfg.FfxDenoiserFloorSpecGuard.value_or_default();
     _convDesc.FloorSpecGuardFadeStart = cfg.FfxDenoiserFloorSpecGuardFadeStart.value_or_default();
     _convDesc.FloorSpecGuardFadeEnd = cfg.FfxDenoiserFloorSpecGuardFadeEnd.value_or_default();
+    _convDesc.FireflyClampK = cfg.FfxDenoiserFireflyClamp.value_or_default();
     _convDesc.SplitPriorStrength = cfg.FfxDenoiserSplitPrior.value_or_default();
     _convDesc.RoughnessProbe = cfg.FfxDenoiserRoughnessProbe.value_or_default();
 
@@ -1433,6 +1436,21 @@ void FSRDFeatureDx12::PublishDiagnostics(const NVSDK_NGX_Parameter& inParams, bo
     AddInput("ColorBeforeParticles", NVSDK_NGX_Parameter_DLSSD_ColorBeforeParticles);
     AddInput("ColorBeforeTransparency", NVSDK_NGX_Parameter_DLSSD_ColorBeforeTransparency);
     AddInput("TransparencyLayer", NVSDK_NGX_Parameter_DLSS_TransparencyLayer);
+
+    // 25 Sep: optional DLSS-RR inputs the shim doesn't use yet, to see what the game provides.
+    // Subsurface scattering first (the skin boiling question), then the rest.
+    AddInput("SSS guide", NVSDK_NGX_Parameter_DLSSD_ScreenSpaceSubsurfaceScatteringGuide);
+    AddInput("ColorBeforeSSS", NVSDK_NGX_Parameter_DLSSD_ColorBeforeScreenSpaceSubsurfaceScattering);
+    AddInput("ColorAfterSSS", NVSDK_NGX_Parameter_DLSSD_ColorAfterScreenSpaceSubsurfaceScattering);
+    AddInput("GBuffer subsurface", NVSDK_NGX_Parameter_GBuffer_Subsurface);
+    AddInput("ReflectedAlbedo", NVSDK_NGX_Parameter_DLSSD_ReflectedAlbedo);
+    AddInput("DiffuseRayDirection", NVSDK_NGX_Parameter_DLSSD_DiffuseRayDirection);
+    AddInput("DiffuseRayDirHitDist", NVSDK_NGX_Parameter_DLSSD_DiffuseRayDirectionHitDistance);
+    AddInput("ColorAfterParticles", NVSDK_NGX_Parameter_DLSSD_ColorAfterParticles);
+    AddInput("ColorAfterTransparency", NVSDK_NGX_Parameter_DLSSD_ColorAfterTransparency);
+    AddInput("ColorBeforeFog", NVSDK_NGX_Parameter_DLSSD_ColorBeforeFog);
+    AddInput("ColorAfterFog", NVSDK_NGX_Parameter_DLSSD_ColorAfterFog);
+    AddInput("Alpha", NVSDK_NGX_Parameter_DLSSD_Alpha);
     AddInput("Output", NVSDK_NGX_Parameter_Output);
 
     static constexpr std::array<const char*, DenoiserConfiguration::kCount> kTuningNames = {

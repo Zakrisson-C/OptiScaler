@@ -84,6 +84,7 @@ class FSRDPreprocessor_Dx12
         DebugEmissiveCheck = 24 << 17 | Debug,     // Grey = albedo sum / 6, magenta = classified emissive
         DebugHitGateParts = 25 << 17 | Debug,      // RGB = roughness / emissive / bias terms of the gate
         DebugMotionConsistency = 26 << 17 | Debug, // game motion vectors vs camera matrices (24 Sep)
+        DebugFireflyClamp = 27 << 17 | Debug,      // pixels the firefly clamp scales down (25 Sep)
     };
 
     enum class CompFlags : uint32_t
@@ -188,6 +189,9 @@ class FSRDPreprocessor_Dx12
         // start, none beyond end. End <= start disables the fade.
         float FloorSpecGuardFadeStart;
         float FloorSpecGuardFadeEnd;
+
+        // Firefly clamp (25 Sep): max ratio of a pixel's lighting to its brightest neighbour's. 0 = off.
+        float FireflyClampK;
 
         // Biases the Mode 2 split toward specular on smooth surfaces. 0 is bit-identical.
         float SplitPriorStrength;

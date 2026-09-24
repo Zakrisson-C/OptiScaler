@@ -497,6 +497,10 @@ class Config
     // the colour buffer. 0 restores the exact min().
     CustomOptional<float> FfxDenoiserFloorSoftMin { 0.0f };
 
+    // Firefly clamp (25 Sep): a pixel brighter than this many times its brightest neighbour (in
+    // albedo-divided lighting) is scaled down to that limit. 0 = off.
+    CustomOptional<float> FfxDenoiserFireflyClamp { 0.0f };
+
     // Diagnostics and input-encoding probes. Requires a denoiser context recreate.
     CustomOptional<bool> FfxDenoiserFsrDebugViews { false };
 

@@ -2559,6 +2559,8 @@ const char* FsrdLegendText(const char* view)
                                "point. Black = agree; brightness = disagreement, full at 4 px; hue = direction. "
                                "Moving cars and people light up legitimately; static scenery should stay black "
                                "while you move and turn." },
+        { "FireflyClamp", "Red where the firefly clamp scales a pixel down, brighter = more removed, over a dim "
+                          "grey copy of the raw image. Nothing red with Firefly Clamp at 0." },
         { "EmissiveCheck", "Grey = raw spec + diffuse albedo summed over RGB, / 6 (physical materials stay under "
                            "~0.5). Magenta = classified emissive (sum >= 5.4), whether or not the override is "
                            "switched off." },
@@ -2866,24 +2868,26 @@ std::string FsrdBuildReport(Config* config, State& state, const FSRD::ProbeReado
                      FsrdNum(config->FfxDenoiserMaxRadiance.value_or_default()),
                      FsrdNum(config->FfxDenoiserRadianceClip.value_or_default()),
                      FsrdNum(config->FfxDenoiserGaussKernRelax.value_or_default())));
-    Line(std::format("Shim sliders: correlation bias {}, floor isolation {}, bias mask {}, detail boost {}, "
-                     "normal sharpness {}, albedo guide {}, luma symmetry {}, grazing {}, soft min {}, roughness "
-                     "exponent {}, hit distance scale {}, spec guard {} (fade {}..{}), split prior {}",
-                     FsrdNum(config->FfxDenoiserCorrelationBias.value_or_default()),
-                     FsrdNum(config->FfxDenoiserFloorIsolation.value_or_default()),
-                     FsrdNum(config->FfxDenoiserBiasMaskStrength.value_or_default()),
-                     FsrdNum(config->FfxDenoiserFloorDetailBoost.value_or_default()),
-                     FsrdNum(config->FfxDenoiserFloorNormalSharpness.value_or_default()),
-                     FsrdNum(config->FfxDenoiserFloorAlbedoGuide.value_or_default()),
-                     FsrdNum(config->FfxDenoiserFloorLumSymmetry.value_or_default()),
-                     FsrdNum(config->FfxDenoiserFloorGrazingSharpness.value_or_default()),
-                     FsrdNum(config->FfxDenoiserFloorSoftMin.value_or_default()),
-                     FsrdNum(config->FfxDenoiserRoughnessExponent.value_or_default()),
-                     FsrdNum(config->FfxDenoiserHitDistScale.value_or_default()),
-                     FsrdNum(config->FfxDenoiserFloorSpecGuard.value_or_default()),
-                     FsrdNum(config->FfxDenoiserFloorSpecGuardFadeStart.value_or_default()),
-                     FsrdNum(config->FfxDenoiserFloorSpecGuardFadeEnd.value_or_default()),
-                     FsrdNum(config->FfxDenoiserSplitPrior.value_or_default())));
+    Line(
+        std::format("Shim sliders: correlation bias {}, floor isolation {}, bias mask {}, detail boost {}, "
+                    "normal sharpness {}, albedo guide {}, luma symmetry {}, grazing {}, soft min {}, roughness "
+                    "exponent {}, hit distance scale {}, spec guard {} (fade {}..{}), split prior {}, firefly clamp {}",
+                    FsrdNum(config->FfxDenoiserCorrelationBias.value_or_default()),
+                    FsrdNum(config->FfxDenoiserFloorIsolation.value_or_default()),
+                    FsrdNum(config->FfxDenoiserBiasMaskStrength.value_or_default()),
+                    FsrdNum(config->FfxDenoiserFloorDetailBoost.value_or_default()),
+                    FsrdNum(config->FfxDenoiserFloorNormalSharpness.value_or_default()),
+                    FsrdNum(config->FfxDenoiserFloorAlbedoGuide.value_or_default()),
+                    FsrdNum(config->FfxDenoiserFloorLumSymmetry.value_or_default()),
+                    FsrdNum(config->FfxDenoiserFloorGrazingSharpness.value_or_default()),
+                    FsrdNum(config->FfxDenoiserFloorSoftMin.value_or_default()),
+                    FsrdNum(config->FfxDenoiserRoughnessExponent.value_or_default()),
+                    FsrdNum(config->FfxDenoiserHitDistScale.value_or_default()),
+                    FsrdNum(config->FfxDenoiserFloorSpecGuard.value_or_default()),
+                    FsrdNum(config->FfxDenoiserFloorSpecGuardFadeStart.value_or_default()),
+                    FsrdNum(config->FfxDenoiserFloorSpecGuardFadeEnd.value_or_default()),
+                    FsrdNum(config->FfxDenoiserSplitPrior.value_or_default()),
+                    FsrdNum(config->FfxDenoiserFireflyClamp.value_or_default())));
     Line(std::format("Buckets: diffuse as direct {}, specular as direct {}; flip view z {}",
                      config->FfxDenoiserDiffuseAsDirect.value_or_default() ? "on" : "off",
                      config->FfxDenoiserSpecularAsDirect.value_or_default() ? "on" : "off",
@@ -4155,6 +4159,16 @@ void MenuCommon::RenderActiveUpscalerSettings(RenderMenuContext& ctx)
                 ShowHelpMarker("Smooths the clamp of the floor against raw colour.\n"
                                "An exact min() creases where the two fields cross.\n"
                                "0 = exact min().");
+
+                if (float v = config->FfxDenoiserFireflyClamp.value_or_default();
+                    ImGui::SliderFloat("Firefly Clamp", &v, 0, 64, "%.1f", ImGuiSliderFlags_Logarithmic))
+                    config->FfxDenoiserFireflyClamp = v;
+                ShowHelpMarker("Scales down a pixel whose lighting is more than\n"
+                               "this many times its brightest neighbour's:\n"
+                               "isolated fireflies (skin, small glints). Real\n"
+                               "features two pixels wide are left alone. Lower\n"
+                               "= more aggressive; try 8, then 4. 0 = off. The\n"
+                               "FireflyClamp view shows what it removes.");
 
                 // Pixel probe, A/B switches for the audit findings, diagnostics (24 Sep)
                 RenderFsrdDebugTools(ctx);

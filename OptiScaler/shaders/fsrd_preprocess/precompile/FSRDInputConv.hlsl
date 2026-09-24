@@ -76,6 +76,8 @@ static const uint2 s_ThreadGroupSize = uint2(THREAD_GROUP_SIZE_X, THREAD_GROUP_S
 #define FLAGS_DEBUG_HIT_GATE_PARTS      (25 << 17 | FLAGS_DEBUG)
 // 24 Sep. Game motion vectors vs the camera matrices: black = agree, see the case below.
 #define FLAGS_DEBUG_MOTION_CONSISTENCY  (26 << 17 | FLAGS_DEBUG)
+// 25 Sep. Pixels the firefly clamp scales down: red, brighter = more removed.
+#define FLAGS_DEBUG_FIREFLY_CLAMP       (27 << 17 | FLAGS_DEBUG)
 
 // DLSS-RR Inputs
 Texture2D<half3> InColor : register(t0); // RGB - NVSDK_NGX_Parameter_Color
@@ -168,7 +170,11 @@ cbuffer CB_Packing : register(b0)
     // than FadeStart, none beyond FadeEnd. FadeEnd <= FadeStart disables the fade (bit-identical).
     float FloorSpecGuardFadeStart;
     float FloorSpecGuardFadeEnd;
-    float2 _Padding3;
+
+    // Firefly clamp (25 Sep): a pixel whose lighting exceeds this many times the brightest of its
+    // 8 neighbours is scaled down to that limit. 0 = off (bit-identical).
+    float FireflyClampK;
+    float _Padding3;
 
     // Current (unjittered) view to clip, for the MotionConsistency view and probe row (24 Sep).
     float4x4 ProjMatrix;
@@ -212,6 +218,45 @@ uint GetDebugMode() { return (Flags & FLAGS_DEBUG_MODE_MASK); }
 // demodulated signal in a sane range; whatever energy that costs is recovered by the
 // existing residual path, which folds it into the skip signal.
 static const float kMinReflectance = 8e-3f;
+
+// Firefly clamp (25 Sep).
+//
+// Lighting estimate: luminance divided by the summed input albedos, so a bright texel on a dark
+// texture doesn't count as an outlier. Floored so near-black albedo can't blow it up.
+float GetFireflyLighting(const int2 p)
+{
+    const float3 albedo = GetSafeFP16(InDiffAlbedo[p].rgb) + GetSafeFP16(InSpecAlbedo[p].rgb);
+    return GetLuminance(GetSafeFP16(InColor[p].rgb)) / max(GetLuminance(albedo), 0.02f);
+}
+
+// Scale that brings a pixel down to FireflyClampK x the brightest of its 8 neighbours. An isolated
+// outlier - one path that found a light its neighbours missed, which is what subsurface random walks
+// and small bright sources produce - has no neighbour anywhere near it; any real feature two pixels
+// wide or more has at least one, and is left alone. Biased (the removed energy is gone), which is the
+// usual price of firefly suppression. Image borders see the centre as a neighbour and are never
+// clamped. 1 = untouched.
+float GetFireflyScale(const int2 px)
+{
+    const float center = GetFireflyLighting(px);
+    float neighbourMax = 0.0f;
+
+    [unroll]
+    for (int y = -1; y <= 1; y++)
+    {
+        [unroll]
+        for (int x = -1; x <= 1; x++)
+        {
+            if (x == 0 && y == 0)
+                continue;
+
+            const int2 p = clamp(px + int2(x, y), int2(0, 0), int2(DstTexSize.xy) - 1);
+            neighbourMax = max(neighbourMax, GetFireflyLighting(p));
+        }
+    }
+
+    const float limit = FireflyClampK * neighbourMax;
+    return (center > limit && center > 0.0f) ? limit / center : 1.0f;
+}
 
 float3 GetViewSpacePos(const int2 px)
 {
@@ -289,13 +334,28 @@ void CSMain(uint3 groupID : SV_GroupID, uint3 gtID : SV_GroupThreadID)
     PROBE_WRITE(PROBE_ROUGHNESS, float4(rawRoughness, surfaceRoughness, emissiveScore, isEmissive));
 
     // Denoiser input color and floor residual
-    const float3 rawColor = GetSafeFP16(InColor[px].rgb);
+    //
+    // 25 Sep: optional firefly clamp on the raw colour, before the floor split, so both the floor
+    // and the denoiser see the clamped value. Pixels the emissive test claims are left alone: a
+    // distant light is exactly an isolated bright pixel. Skip-path pixels (sky, near-black albedo)
+    // are composited from the game's own colour and are unaffected either way.
+    const float3 inputColor = GetSafeFP16(InColor[px].rgb);
+    float3 rawColor = inputColor;
+    float fireflyScale = 1.0f;
+
+    [branch]
+    if (FireflyClampK > 0.0f)
+    {
+        fireflyScale = lerp(GetFireflyScale(px), 1.0f, emissiveScore);
+        rawColor *= fireflyScale;
+    }
     float4 floorColor = InFloorColor[px];
     const float rawLuma = GetLuminance(rawColor);
     const float floorLuma = GetLuminance(floorColor.rgb);
     floorColor.a = floorLuma;
 
-    PROBE_WRITE(PROBE_RAW_COLOR, float4(rawColor, rawLuma));
+    // The probe reports the game's colour as delivered, before the firefly clamp.
+    PROBE_WRITE(PROBE_RAW_COLOR, float4(inputColor, GetLuminance(inputColor)));
     PROBE_WRITE(PROBE_FLOOR_IN, float4(floorColor.rgb, floorLuma));
 
     // Floor color blending
@@ -631,6 +691,14 @@ void CSMain(uint3 groupID : SV_GroupID, uint3 gtID : SV_GroupThreadID)
                 // (or the previous view) don't describe the game's camera.
                 case FLAGS_DEBUG_MOTION_CONSISTENCY:
                     debugColor = VisualizeMotionVec(motionErrorPx, 0.25f);
+                    break;
+
+                // 25 Sep. Red where the firefly clamp scales a pixel down, brighter = more of it
+                // removed (full red at 75% or more), over a dim grey copy of the raw luminance.
+                // Nothing red with Firefly Clamp at 0.
+                case FLAGS_DEBUG_FIREFLY_CLAMP:
+                    debugColor = lerp(0.25f * saturate(rawLuma).xxx, float3(1.0f, 0.0f, 0.0f),
+                                      saturate((1.0f - fireflyScale) * (4.0f / 3.0f)));
                     break;
 
                 case FLAGS_DEBUG_EMISSIVE_CHECK:
