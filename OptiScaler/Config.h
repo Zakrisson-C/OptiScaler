@@ -535,6 +535,42 @@ class Config
     // Contingent on the signal-delta view confirming the split is degenerate.
     CustomOptional<float> FfxDenoiserSplitPrior { 0.0f };
 
+    // Troubleshooting (24 Sep). Runtime-only. None of these changes the image unless switched on.
+    //
+    // Pixel probe: exact values of the shim's inputs, decisions and outputs in a small window, shown
+    // in the menu (FSR-RR Advanced Settings > Pixel Probe). X/Y in [0, 1] of the render area.
+    CustomOptional<bool> FfxDenoiserProbe { false };
+    CustomOptional<float> FfxDenoiserProbeX { 0.5f };
+    CustomOptional<float> FfxDenoiserProbeY { 0.5f };
+    CustomOptional<int> FfxDenoiserProbeRadius { 2 };   // half-width in pixels, 0..4 (1x1 .. 9x9)
+    CustomOptional<int> FfxDenoiserProbeAverage { 16 }; // readouts in the running average, 1 = none
+
+    // A/B switches for the pipeline audit's findings (claude/fsrd-pipeline-audit.md in the project).
+    // FfxDenoiserAbActive is a master switch over all of them, bindable to a key, so a chosen set
+    // can be flipped on and off as one for before/after comparisons.
+    //
+    // NoEmissive: never reinterpret a pixel as emissive. GateNoRoughness (finding 7) / GateNoBias: keep the
+    // hit distance on rough / bias-masked pixels. SoftMinNonNeg (1): soft-min floor clamped at 0.
+    // SkipAlphaFinal (2): skip alpha from the final floor. SkippedInactive (6): skipped pixels sent as
+    // inactive. FloorNoAlias (4): first floor pass not in place. DeclaredStates (5): signal resource states
+    // declared as they are. Albedo16 (3): RGBA16F albedo, recreates the feature. SdkDefaults (10):
+    // denoiser 1.2's own tuning defaults.
+    CustomOptional<bool> FfxDenoiserAbActive { true };
+    CustomOptional<bool> FfxDenoiserAbNoEmissive { false };
+    CustomOptional<bool> FfxDenoiserAbGateNoRoughness { false };
+    CustomOptional<bool> FfxDenoiserAbGateNoBias { false };
+    CustomOptional<bool> FfxDenoiserAbSoftMinNonNeg { false };
+    CustomOptional<bool> FfxDenoiserAbSkipAlphaFinal { false };
+    CustomOptional<bool> FfxDenoiserAbSkippedInactive { false };
+    CustomOptional<bool> FfxDenoiserAbFloorNoAlias { false };
+    CustomOptional<bool> FfxDenoiserAbDeclaredStates { false };
+    CustomOptional<bool> FfxDenoiserAbAlbedo16 { false };
+    CustomOptional<bool> FfxDenoiserAbSdkDefaults { false };
+
+    // Keys: flip FfxDenoiserAbActive, and toggle between no debug view and the last one used.
+    CustomOptional<int> FfxDenoiserAbShortcutKey { UnboundKey };
+    CustomOptional<int> FfxDenoiserDebugViewShortcutKey { UnboundKey };
+
     // These default values will be overwritten at upscaler init time with optimized values
     CustomOptional<float> FsrVelocity { 1.0f };
     CustomOptional<float> FsrReactiveScale { 1.0f };

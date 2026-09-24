@@ -314,6 +314,10 @@ bool Config::Reload(std::filesystem::path iniPath)
             FfxDenoiserMaxRadiance.set_from_config(readFloat("FSR-RR", "MaxRadiance"));
             FfxDenoiserRadianceClip.set_from_config(readFloat("FSR-RR", "RadianceClipDeviation"));
             FfxDenoiserGaussKernRelax.set_from_config(readFloat("FSR-RR", "GaussianKernelRelaxation"));
+
+            // Troubleshooting keybinds (24 Sep). The switches they drive stay runtime-only.
+            FfxDenoiserAbShortcutKey.set_from_config(readInt("FSR-RR", "ABShortcutKey"));
+            FfxDenoiserDebugViewShortcutKey.set_from_config(readInt("FSR-RR", "DebugViewShortcutKey"));
         }
 
         // XeSS
@@ -1160,6 +1164,15 @@ bool Config::SaveIni()
                      GetFloatValue(Instance()->FfxDenoiserRadianceClip.value_for_config()).c_str());
         ini.SetValue("FSR-RR", "GaussianKernelRelaxation",
                      GetFloatValue(Instance()->FfxDenoiserGaussKernRelax.value_for_config()).c_str());
+
+        auto keySetting = Instance()->FfxDenoiserAbShortcutKey.value_for_config();
+        ini.SetValue("FSR-RR", "ABShortcutKey",
+                     GetIntValue(Instance()->FfxDenoiserAbShortcutKey.value_for_config(), keySetting > 0).c_str());
+
+        keySetting = Instance()->FfxDenoiserDebugViewShortcutKey.value_for_config();
+        ini.SetValue(
+            "FSR-RR", "DebugViewShortcutKey",
+            GetIntValue(Instance()->FfxDenoiserDebugViewShortcutKey.value_for_config(), keySetting > 0).c_str());
     }
 
     // XeSS

@@ -5,7 +5,7 @@
     "RootFlags(0), " \
     "CBV(b0), " \
     "DescriptorTable(SRV(t0, numDescriptors = 10), visibility = SHADER_VISIBILITY_ALL), " \
-    "DescriptorTable(UAV(u0, numDescriptors = 7), visibility = SHADER_VISIBILITY_ALL), "
+    "DescriptorTable(UAV(u0, numDescriptors = 8), visibility = SHADER_VISIBILITY_ALL), "
 
 // Dispatch config
 #define THREAD_GROUP_SIZE_X     8
@@ -21,6 +21,16 @@ static const uint2 s_ThreadGroupSize = uint2(THREAD_GROUP_SIZE_X, THREAD_GROUP_S
 // FLAGS_MODE_2_SIGNAL (1 << 3) removed (transplant, 22 Sep): the split-signal path below is now
 // unconditional - denoiser 1.2 has no combined-signal shape left to select away from.
 #define FLAGS_HAS_BIAS_MASK             (1 << 4)
+
+// Troubleshooting (24 Sep). All off by default: a clear bit reproduces the previous behaviour
+// exactly. The FLAGS_AB_* bits are the A/B switches for the pipeline audit's findings.
+#define FLAGS_PROBE                     (1 << 5)  // Write pixel probe records to OutProbe
+#define FLAGS_AB_NO_EMISSIVE            (1 << 6)  // Never reinterpret a pixel as emissive
+#define FLAGS_AB_GATE_NO_ROUGHNESS      (1 << 7)  // Hit distance gate ignores roughness (finding 7)
+#define FLAGS_AB_GATE_NO_BIAS           (1 << 8)  // Hit distance gate ignores the bias mask
+#define FLAGS_AB_SOFTMIN_NONNEG         (1 << 9)  // Clamp the soft-min floor at zero (finding 1)
+#define FLAGS_AB_SKIP_ALPHA_FINAL       (1 << 10) // SkipSignal alpha from the final floor (finding 2)
+#define FLAGS_AB_SKIPPED_INACTIVE       (1 << 11) // Skipped pixels sent as inactive, alpha -1 (finding 6)
 
 // Debug Flags
 #define FLAGS_DEBUG                     (1 << 16)
@@ -59,6 +69,10 @@ static const uint2 s_ThreadGroupSize = uint2(THREAD_GROUP_SIZE_X, THREAD_GROUP_S
 #define FLAGS_DEBUG_SIGNAL_DELTA        (22 << 17 | FLAGS_DEBUG)
 #define FLAGS_DEBUG_ROUGHNESS_PROBE     (23 << 17 | FLAGS_DEBUG)
 
+// 24 Sep. Chosen to read unambiguously through the game's tonemapper and grading.
+#define FLAGS_DEBUG_EMISSIVE_CHECK      (24 << 17 | FLAGS_DEBUG)
+#define FLAGS_DEBUG_HIT_GATE_PARTS      (25 << 17 | FLAGS_DEBUG)
+
 // DLSS-RR Inputs
 Texture2D<half3> InColor : register(t0); // RGB - NVSDK_NGX_Parameter_Color
 Texture2D<float> InDepth : register(t1); // R - NVSDK_NGX_Parameter_Depth - hardware or linear - inverted or not
@@ -88,6 +102,11 @@ RWTexture2D<half4> OutSpecAlbedo : register(u4); // RGB: Specular Albedo, A: dot
 RWTexture2D<half4> OutDiffAlbedo : register(u5); // RGB: Diffuse Albedo, A: Metalness (not provided)
 
 RWTexture2D<half4> OutSkipSignal : register(u6);
+
+// Pixel probe (24 Sep). One row per pixel in the probe window, PROBE_SLOT_COUNT float4 per row.
+// Read back on the CPU and shown in the menu, so values are exact rather than read off a
+// colour map through the game's tonemapper.
+RWTexture2D<float4> OutProbe : register(u7);
 
 cbuffer CB_Packing : register(b0)
 {
@@ -131,10 +150,41 @@ cbuffer CB_Packing : register(b0)
     float RoughnessProbe;
 
     float _Padding;
+
+    // Pixel probe window: centre pixel and half-width. Only read when FLAGS_PROBE is set.
+    int2 ProbeCenter;
+    int ProbeRadius;
+    uint _Padding2;
 };
 
 bool IsSet(uint mask) { return (Flags & mask) == mask; }
 uint GetDebugMode() { return (Flags & FLAGS_DEBUG_MODE_MASK); }
+
+// Pixel probe record layout. Must match FSRD::Probe::Slot in FSRDDiagnostics.h.
+#define PROBE_RAW_COLOR         0  // raw colour rgb, raw luminance
+#define PROBE_RAW_DIFF_ALBEDO   1  // input diffuse albedo rgb, input bias mask
+#define PROBE_RAW_SPEC_ALBEDO   2  // input specular albedo rgb, albedo sum (emissive test input)
+#define PROBE_ROUGHNESS         3  // input roughness, after exponent, emissive score, emissive applied
+#define PROBE_HIT_DIST          4  // input hit distance, hit distance sent, gate, 1 = skip path
+#define PROBE_GATE_TERMS        5  // gate roughness term, emissive term, bias term, roughness sent
+#define PROBE_SPEC_USED         6  // specular albedo used (after override + clamp) rgb, bias weight
+#define PROBE_DIFF_USED         7  // diffuse albedo used (after override + clamp) rgb, floor similarity
+#define PROBE_FLOOR_IN          8  // floor from the a-trous filter rgb, its luminance
+#define PROBE_FLOOR_USED        9  // floor after isolation/guard/bias/soft min rgb, denoiser fraction
+#define PROBE_DENOISER_COLOR    10 // raw - floor rgb, demodulation gain
+#define PROBE_DEMOD_SPEC        11 // signal 1 rgb (demodulated specular), specular split fraction
+#define PROBE_DEMOD_DIFF        12 // signal 2 rgb (demodulated diffuse), signal 2 alpha
+#define PROBE_SKIP_OUT          13 // skip signal rgb as written, alpha as written
+#define PROBE_DEPTH_MOTION      14 // linear depth, compressed depth, motion x, motion y (input units)
+#define PROBE_GEOMETRY          15 // depth delta, input normal length, N.V, residual luminance
+#define PROBE_SLOT_COUNT        16
+
+// Evaluates value only inside the branch, so pixels outside the window pay for a compare.
+#define PROBE_WRITE(slot, value)                                    \
+    {                                                               \
+        [branch] if (isProbe)                                       \
+            OutProbe[uint2((slot), probeRecord)] = float4(value);   \
+    }
 
 // Lower bound on the albedo used as a demodulation divisor.
 //
@@ -170,6 +220,13 @@ void CSMain(uint3 groupID : SV_GroupID, uint3 gtID : SV_GroupThreadID)
     if (px.x >= DstTexSize.x || px.y >= DstTexSize.y)
         return;
 
+    // Pixel probe (24 Sep). Every pixel inside the window writes one record of intermediate
+    // values (see PROBE_* above). probeRecord is only used when isProbe is true.
+    const int2 probeOffset = int2(px) - ProbeCenter;
+    const bool isProbe = IsSet(FLAGS_PROBE) && all(abs(probeOffset) <= ProbeRadius);
+    const uint probeRecord =
+        uint((probeOffset.y + ProbeRadius) * (2 * ProbeRadius + 1) + (probeOffset.x + ProbeRadius));
+
     // Albedo / reflectance
     //
     // Zeroed albedos are unusable sentinels and must be skipped.
@@ -188,10 +245,17 @@ void CSMain(uint3 groupID : SV_GroupID, uint3 gtID : SV_GroupThreadID)
     // threshold - animated signage and video billboards in particular - and the two
     // sides of the branch demodulate very differently, so the classification itself
     // becomes a source of temporal instability. The transition band costs nothing.
-    const float isEmissive = SoftAbove(totalAlbedo, 5.9f, 0.5f);
+    //
+    // 24 Sep: emissiveScore is the classification itself; isEmissive is what gets applied.
+    // FLAGS_AB_NO_EMISSIVE switches the override off (the Turbo-R paint question) while the
+    // EmissiveCheck view and the probe still report what the test would have decided.
+    const float emissiveScore = SoftAbove(totalAlbedo, 5.9f, 0.5f);
+    const float isEmissive = IsSet(FLAGS_AB_NO_EMISSIVE) ? 0.0f : emissiveScore;
     diffAlbedo.rgb *= (1.0f - isEmissive);
     specReflectance.rgb = lerp(specReflectance.rgb, 0.1f, isEmissive);
-    
+
+    PROBE_WRITE(PROBE_RAW_SPEC_ALBEDO, float4(GetSafeFP16(InSpecAlbedo[px].rgb), totalAlbedo));
+
     // Clamp albedo
     const float3 albedoOvershoot = max((specReflectance.rgb + diffAlbedo.rgb) - 1.0f, 0.0f);
     specReflectance.rgb = saturate(specReflectance.rgb - albedoOvershoot);
@@ -205,12 +269,17 @@ void CSMain(uint3 groupID : SV_GroupID, uint3 gtID : SV_GroupThreadID)
     const float rawRoughness = IsSet(FLAGS_PACKED_ROUGHNESS) ? InNormals[px].a : InRoughness[px];
     const float surfaceRoughness = saturate(pow(max(rawRoughness, 1e-5f), RoughnessExponent));
 
+    PROBE_WRITE(PROBE_ROUGHNESS, float4(rawRoughness, surfaceRoughness, emissiveScore, isEmissive));
+
     // Denoiser input color and floor residual
     const float3 rawColor = GetSafeFP16(InColor[px].rgb);
-    float4 floorColor = InFloorColor[px];  
+    float4 floorColor = InFloorColor[px];
     const float rawLuma = GetLuminance(rawColor);
     const float floorLuma = GetLuminance(floorColor.rgb);
     floorColor.a = floorLuma;
+
+    PROBE_WRITE(PROBE_RAW_COLOR, float4(rawColor, rawLuma));
+    PROBE_WRITE(PROBE_FLOOR_IN, float4(floorColor.rgb, floorLuma));
 
     // Floor color blending
     //
@@ -251,6 +320,10 @@ void CSMain(uint3 groupID : SV_GroupID, uint3 gtID : SV_GroupThreadID)
     const float biasWeight = saturate(biasMask * BiasMaskStrength);
     floorColor.rgb = lerp(floorColor.rgb, rawColor, biasWeight);
 
+    PROBE_WRITE(PROBE_RAW_DIFF_ALBEDO, float4(GetSafeFP16(InDiffAlbedo[px].rgb), biasMask));
+    PROBE_WRITE(PROBE_SPEC_USED, float4(specReflectance.rgb, biasWeight));
+    PROBE_WRITE(PROBE_DIFF_USED, float4(diffAlbedo.rgb, saturate(floorSimilarity)));
+
     // Soft clamp.
     //
     // An exact min() of two smooth fields creases along the curve where they cross, and
@@ -260,7 +333,17 @@ void CSMain(uint3 groupID : SV_GroupID, uint3 gtID : SV_GroupThreadID)
     // the isEmissive and canUseHitDist cuts. The quadratic soft min only ever dips below
     // min(), so the floor can never exceed the raw colour.
     floorColor.rgb = SoftMin(rawColor, floorColor.rgb, FloorSoftMin);
+
+    // Audit finding 1 (24 Sep): the soft min can go negative. The subtraction below uses the
+    // negative floor, but the SkipSignal write clamps it to 0, so the pixel gains light.
+    // Clamping here keeps floor <= min(raw, floor) and >= 0.
+    if (IsSet(FLAGS_AB_SOFTMIN_NONNEG))
+        floorColor.rgb = max(floorColor.rgb, 0.0f);
+
     const float3 denoiserColor = rawColor - floorColor.rgb;
+
+    PROBE_WRITE(PROBE_FLOOR_USED,
+                float4(floorColor.rgb, saturate(GetLuminance(denoiserColor) * rcp(max(rawLuma, 1e-3f)))));
 
     // Depth - full position needed for reprojected depth delta
     const float3 viewSpacePos = GetViewSpacePos(px);
@@ -291,8 +374,10 @@ void CSMain(uint3 groupID : SV_GroupID, uint3 gtID : SV_GroupThreadID)
     const float3 motionOut = float3(motionIn, depthDelta);
     OutMotion[px] = half4(motionOut, 0.0f);
 
+    PROBE_WRITE(PROBE_DEPTH_MOTION, float4(viewSpacePos.z, compressedDepth, motionIn));
+
     if (((compressedDepth < 0.99f) && totalAlbedo > 1e-2f) || IsSet(FLAGS_DEBUG))
-    {        
+    {
         // Normals - FSR-RR requries world normals.
         //
         // [TODO!] DLSS-RR normals may be in view or world space. They will need to be transformed to account
@@ -312,6 +397,7 @@ void CSMain(uint3 groupID : SV_GroupID, uint3 gtID : SV_GroupThreadID)
    
         half hitDist = 0.0f;
         float dbgHitGate = 0.0f;
+        float3 dbgGateParts = 0.0f;
         half3 demodColor = 0.0f;
         float demodGain = 0.0f;
         float3 signalDelta = 0.0f;
@@ -375,12 +461,29 @@ void CSMain(uint3 groupID : SV_GroupID, uint3 gtID : SV_GroupThreadID)
             //
             // Bias-masked pixels are excluded: their colour is not a surface reflection and
             // the hit distance that comes with them is not meaningful.
-            const float canUseHitDist = SoftBelow(roughness, 0.30f, 0.15f)
-                                      * (1.0f - isEmissive)
-                                      * (1.0f - biasWeight);
+            //
+            // 24 Sep: the three factors are kept apart for the HitGateParts view and the probe,
+            // with A/B switches on the roughness and bias terms. Same product in the same order,
+            // so with both switches clear the result is bit-identical to before.
+            const float gateRoughness = IsSet(FLAGS_AB_GATE_NO_ROUGHNESS) ? 1.0f : SoftBelow(roughness, 0.30f, 0.15f);
+            const float gateEmissive = 1.0f - isEmissive;
+            const float gateBias = IsSet(FLAGS_AB_GATE_NO_BIAS) ? 1.0f : (1.0f - biasWeight);
+            const float canUseHitDist = gateRoughness * gateEmissive * gateBias;
             hitDist = GetSafeFP16(InSpecHitDist[px] * HitDistScale * canUseHitDist);
             dbgHitGate = canUseHitDist;
-            
+            dbgGateParts = float3(gateRoughness, gateEmissive, gateBias);
+
+            PROBE_WRITE(PROBE_HIT_DIST, float4(InSpecHitDist[px], hitDist, canUseHitDist, 0.0f));
+            PROBE_WRITE(PROBE_GATE_TERMS, float4(gateRoughness, gateEmissive, gateBias, roughness));
+            PROBE_WRITE(PROBE_DENOISER_COLOR, float4(denoiserColor, demodGain));
+            PROBE_WRITE(PROBE_DEMOD_SPEC, float4(demodSpecular, GetLuminance(biasedFraction * isSplitValid)));
+            PROBE_WRITE(PROBE_DEMOD_DIFF, float4(demodDiffuse, 0.0f));
+            PROBE_WRITE(PROBE_GEOMETRY,
+                        float4(depthDelta, length(worldSurfaceNormal.rgb),
+                               dot(normalize(worldSurfaceNormal.rgb),
+                                   normalize(mul(InvViewMatrix, float4(0.0f, 0.0f, 0.0f, 1.0f)).xyz - worldSpacePos)),
+                               GetLuminance(residual)));
+
             [branch]
             if (!IsSet(FLAGS_DEBUG))
             {
@@ -401,8 +504,18 @@ void CSMain(uint3 groupID : SV_GroupID, uint3 gtID : SV_GroupThreadID)
         
         OutSpecAlbedo[px] = half4(GetSafeFP16(specReflectance), 0.0f);
         OutDiffAlbedo[px] = half4(GetSafeFP16(diffAlbedo), 0.0f);
+
+        // Audit finding 2 (24 Sep): floorColor.a still holds the luminance of the floor as it
+        // came out of the a-trous filter, before isolation, spec guard, bias mask, min and the
+        // residual. The composition uses it as the skip luminance in the SSIM reference that
+        // drives the Correlation Bias raw blend.
+        if (IsSet(FLAGS_AB_SKIP_ALPHA_FINAL))
+            floorColor.a = GetLuminance(floorColor.rgb);
+
         OutSkipSignal[px] = half4(GetSafeFP16(floorColor));
-        
+
+        PROBE_WRITE(PROBE_SKIP_OUT, GetSafeFP16(floorColor));
+
         [branch]
         if (IsSet(FLAGS_DEBUG))
         {
@@ -428,8 +541,28 @@ void CSMain(uint3 groupID : SV_GroupID, uint3 gtID : SV_GroupThreadID)
 
                 case FLAGS_DEBUG_HIT_DIST_GATE:
                     // The canUseHitDist ramp itself, separated from the buffer it scales.
-                    // Blue = closed (specular reprojects with the surface), red = open.
+                    // 24 Sep correction: this Turbo fit starts near black, not blue. Near
+                    // black = closed (specular reprojects with the surface), blue/cyan/green =
+                    // partly closed, dark red = open. The game's grading turns the dark red
+                    // orange-tan. HitGateParts shows which factor closes it.
                     debugColor = TurboColormap(dbgHitGate);
+                    break;
+
+                // 24 Sep. R = roughness term, G = emissive term, B = bias mask term, each 1 when
+                // it lets hit distance through. White = open. Cyan = closed by roughness,
+                // magenta = closed by the emissive override, yellow = closed by the bias mask,
+                // black = closed by more than one. Saturated primaries survive the grading.
+                case FLAGS_DEBUG_HIT_GATE_PARTS:
+                    debugColor = dbgGateParts;
+                    break;
+
+                // 24 Sep. Grey = raw specular + diffuse albedo summed over RGB, divided by 6
+                // (physical materials stay well below 0.5). Magenta = inside the emissive band
+                // (sum >= 5.4), where the override forces roughness 0, diffuse 0, spec 0.1 and
+                // closes the hit distance gate. Reports the test, whether or not the override
+                // is switched off.
+                case FLAGS_DEBUG_EMISSIVE_CHECK:
+                    debugColor = (emissiveScore > 0.0f) ? float3(1.0f, 0.0f, 1.0f) : saturate(totalAlbedo / 6.0f).xxx;
                     break;
 
                 case FLAGS_DEBUG_DENOISER_FRACTION:
@@ -551,8 +684,20 @@ void CSMain(uint3 groupID : SV_GroupID, uint3 gtID : SV_GroupThreadID)
         OutNormals[px] = 0.0f;
         OutSpecAlbedo[px] = 0.0f;
         OutDiffAlbedo[px] = 0.0f;
-        OutSignal1[px] = 0.0f;
-        OutSignal2[px] = 0.0f;
+
+        // Audit finding 6 (24 Sep): alpha 0 declares a skipped pixel an active, valid black
+        // sample. Denoiser 1.2 wants a negative alpha for pixels without a signal.
+        const float skippedAlpha = IsSet(FLAGS_AB_SKIPPED_INACTIVE) ? -1.0f : 0.0f;
+        OutSignal1[px] = half4(0.0f, 0.0f, 0.0f, skippedAlpha);
+        OutSignal2[px] = half4(0.0f, 0.0f, 0.0f, skippedAlpha);
         OutSkipSignal[px] = half4(rawColor, rawLuma);
+
+        PROBE_WRITE(PROBE_HIT_DIST, float4(InSpecHitDist[px], 0.0f, 0.0f, 1.0f));
+        PROBE_WRITE(PROBE_GATE_TERMS, float4(0.0f, 0.0f, 0.0f, 0.0f));
+        PROBE_WRITE(PROBE_DENOISER_COLOR, float4(denoiserColor, 0.0f));
+        PROBE_WRITE(PROBE_DEMOD_SPEC, float4(0.0f, 0.0f, 0.0f, 0.0f));
+        PROBE_WRITE(PROBE_DEMOD_DIFF, float4(0.0f, 0.0f, 0.0f, skippedAlpha));
+        PROBE_WRITE(PROBE_SKIP_OUT, float4(rawColor, rawLuma));
+        PROBE_WRITE(PROBE_GEOMETRY, float4(depthDelta, 0.0f, 0.0f, 0.0f));
     }
 }

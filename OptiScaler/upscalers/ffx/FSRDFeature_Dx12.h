@@ -79,7 +79,23 @@ class FSRDFeatureDx12 : public FFXFeatureDx12
 
     ffxContext _pDenoiserCtx;
     ffxCreateContextDescDenoiser _denoiserCtxDesc;
-    DenoiserConfiguration _denoiserSettings;
+    DenoiserConfiguration _denoiserSettings; // values currently in force in the denoiser context
+
+    // Troubleshooting (24 Sep, see shaders/fsrd_preprocess/FSRDDiagnostics.h)
+    DenoiserConfiguration _sdkDefaults {}; // denoiser 1.2's own defaults, as queried at context creation
+    std::array<int, DenoiserConfiguration::kCount> _sdkDefaultCodes {}; // ffxReturnCode_t of each query
+    std::array<int, DenoiserConfiguration::kCount> _applyCodes {};      // last configure result, -1 = never
+    bool _albedo16AtCreate = false;  // A/B finding 3 as it was when the converter was created
+    bool _messageCallbackOk = false; // the denoiser DLL accepted the runtime message callback
+    int _lastDispatchCode = -1;      // ffxReturnCode_t of this frame's dispatch, -1 = not dispatched
+    uint32_t _lastDispatchFlags = 0; // dispatchDesc.flags of the last dispatch
+    float _lastProjTerms[3] = {};    // projection A, B, W as GetViewPlanes read them
+    bool _lastInfiniteFar = false;
+    bool _lastRightHanded = false;
+    bool _lastDeclaredStates = false;
+
+    static bool DesiredAlbedo16();
+    void PublishDiagnostics(const NVSDK_NGX_Parameter& inParams, bool denoiseBypassed, bool upscaleBypassed);
 
     static bool s_isHWDepth;
     static bool s_isRoughnessPacked;

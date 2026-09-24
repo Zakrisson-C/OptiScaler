@@ -35,6 +35,12 @@
 #include <misc/IdentifyGpu.h>
 #include <hooks/Xell_Hooks.h>
 #include <low_latency/input/input_common.h>
+#include <shaders/fsrd_preprocess/FSRDDiagnostics.h>
+
+#include <cmath>
+#include <cstring>
+#include <deque>
+#include <format>
 
 enum class UiTargetMode
 {
@@ -59,6 +65,9 @@ static bool inputMenu = false;
 static bool inputFG = false;
 static bool inputFps = false;
 static bool inputFpsCycle = false;
+static bool inputFsrdAb = false;        // FSR-RR A/B master switch key (24 Sep)
+static bool inputFsrdDebugView = false; // FSR-RR debug view on/off key (24 Sep)
+static uint64_t fsrdLastDebugView = 0;  // last non-None FSR-RR debug view, for the key above
 static uint64_t lastInputTick = 0;
 constexpr uint64_t debounceThreshold = 1000;
 
@@ -281,6 +290,10 @@ void MenuCommon::UpdateManualInput(HWND targetHwnd)
         CheckShortcut(config->FGShortcutKey.value_or_default(), inputFG, "Menu key pressed, will be switching FG mode");
         CheckShortcut(config->FpsCycleShortcutKey.value_or_default(), inputFpsCycle,
                       "Menu key pressed, will be switching FPS mode");
+        CheckShortcut(config->FfxDenoiserAbShortcutKey.value_or_default(), inputFsrdAb,
+                      "Menu key pressed, will be flipping the FSR-RR A/B switches");
+        CheckShortcut(config->FfxDenoiserDebugViewShortcutKey.value_or_default(), inputFsrdDebugView,
+                      "Menu key pressed, will be toggling the FSR-RR debug view");
     }
     else if (capturingKey)
     {
@@ -1470,6 +1483,45 @@ void MenuCommon::HandleMenuShortcuts(RenderMenuContext& ctx)
         if (inputFpsCycle && config->ShowFps.value_or_default())
             config->FpsOverlayType = (FpsOverlay) ((config->FpsOverlayType.value_or_default() + 1) % FpsOverlay_COUNT);
 
+        // FSR-RR troubleshooting keys (24 Sep). A toast names the new state, so it also labels
+        // screenshots taken right after the key press.
+        if (inputFsrdAb)
+        {
+            inputFsrdAb = false;
+            config->FfxDenoiserAbActive = !config->FfxDenoiserAbActive.value_or_default();
+
+            ImGuiToast notification { ImGuiToastType::Info, 2500 };
+            notification.setTitle("FSR-RR A/B switches %s",
+                                  config->FfxDenoiserAbActive.value_or_default() ? "ON" : "OFF");
+            ImGui::InsertNotification(notification);
+        }
+
+        if (inputFsrdDebugView)
+        {
+            inputFsrdDebugView = false;
+            const uint64_t current = config->FfxDenoiserDebugMode.value_or_default();
+
+            if (current != 0)
+            {
+                fsrdLastDebugView = current;
+                config->FfxDenoiserDebugMode = uint64_t(0);
+            }
+            else if (fsrdLastDebugView != 0)
+            {
+                config->FfxDenoiserDebugMode = fsrdLastDebugView;
+            }
+
+            const uint64_t shown = config->FfxDenoiserDebugMode.value_or_default();
+            const auto name = state.ffxDenoiserDebugModeNames.find(shown);
+
+            ImGuiToast notification { ImGuiToastType::Info, 2500 };
+            notification.setTitle("FSR-RR debug view: %s",
+                                  name != state.ffxDenoiserDebugModeNames.end() && name->second != nullptr
+                                      ? name->second
+                                      : (shown == 0 ? "None (pick a view in the menu once)" : "?"));
+            ImGui::InsertNotification(notification);
+        }
+
         if (inputMenu)
         {
             inputMenu = false;
@@ -1515,6 +1567,8 @@ void MenuCommon::HandleMenuShortcuts(RenderMenuContext& ctx)
         }
 
         inputFpsCycle = false;
+        inputFsrdAb = false;
+        inputFsrdDebugView = false;
     }
 }
 
@@ -2430,6 +2484,778 @@ void MenuCommon::RenderMainMenuHeaderMessages(RenderMenuContext& ctx)
     }
 }
 
+// FSR-RR troubleshooting tools (24 Sep 2026) ---------------------------------------------------------
+//
+// Pixel probe readout, A/B switches for the pipeline audit's findings, and a diagnostics panel. The
+// shim publishes its side through FSRD::Diagnostics (shaders/fsrd_preprocess/FSRDDiagnostics.h).
+
+namespace
+{
+namespace fp = FSRD::Probe;
+using FsrdStats = FSRD::Probe::Stats;
+
+// What each FSR-RR debug view's colours mean. The Turbo colour map in these shaders is a polynomial
+// fit that starts near black (not blue) and ends in dark red, which the game's grading turns
+// orange-tan - the misreading this exists to prevent.
+const char* FsrdLegendText(const char* view)
+{
+    if (view == nullptr)
+        return nullptr;
+
+    struct Entry
+    {
+        const char* view;
+        const char* text;
+    };
+
+    static constexpr Entry kLegend[] = {
+        { "DebugOverview", "FSR-RR's own debug views (needs 'FSR-RR Debug Views'). Viewport -1 tiles them all, "
+                           "0-11 shows one full screen." },
+        { "DenoiserBypass", "The game's raw colour straight into the upscaler: the whole shim and the denoiser "
+                            "are bypassed." },
+        { "UpscalerBypass", "The composited result at render resolution, upscaler skipped." },
+        { "DenoiserOutput", "What the denoiser returns, specular + diffuse, still demodulated (no albedo): "
+                            "lighting only, the floor not added back." },
+        { "SkipSignal", "The floor: what travels around the denoiser and is added back undenoised." },
+        { "RawColor", "The game's noisy input colour, nothing applied." },
+        { "DlssBias", "The game's bias-current-colour mask as delivered." },
+        { "DlssColorBeforeParticles", "That game buffer as delivered." },
+        { "DlssColorBeforeTransparency", "That game buffer as delivered." },
+        { "DlssTransparencyLayer", "That game buffer as delivered." },
+        { "InMotionVectors", "Game motion vectors: hue = direction, brightness = length." },
+        { "InNormals", "Game normals, xyz as rgb (grey 0.5 = 0)." },
+        { "InRoughness", "Roughness as sent to the denoiser: after the exponent AND the emissive cut, so "
+                         "pixels classified emissive read black. RoughnessProbe reads it before the cut." },
+        { "InSpecHitDist", "Game specular hit distance. Magenta = exactly 0 or missing. Otherwise Turbo on "
+                           "log2(1 + d) over 0..127: near black = short, dark red = long." },
+        { "InDiffAlbedo", "Game diffuse albedo as delivered, before the emissive override." },
+        { "InSpecAlbedo", "Game specular albedo as delivered, before the emissive override." },
+        { "OutRadiance", "Demodulated signals sent to the denoiser, diffuse + specular." },
+        { "OutLinearDepth", "Linear depth, Turbo on log2(1 + z) over 0..2047." },
+        { "OutMotionVectors", "Motion vectors handed to the denoiser." },
+        { "OutNormals", "Normals after octahedral encoding; should match InNormals." },
+        { "OutSpecAlbedo", "Specular albedo after the emissive override and clamp: what the denoiser "
+                           "demodulates by." },
+        { "OutDiffAlbedo", "Diffuse albedo after the emissive override and clamp: what the denoiser "
+                           "demodulates by." },
+        { "OutDepthDelta", "Linear depth change since the last frame, signed." },
+        { "NormDepth", "Log-normalised depth, Turbo: near black = near, dark red = far." },
+        { "AlbedoError", "Spec + diffuse albedo above 1, measured AFTER the emissive override, so pixels "
+                         "classified emissive read black here. Use EmissiveCheck for those." },
+        { "Correlation", "Correlation Bias raw blend weight, Turbo: near black = denoised kept, dark red = raw "
+                         "blended back." },
+        { "FloorVariance", "Floor alpha (seed instability), Turbo." },
+        { "FloorColor", "The floor as the a-trous filter left it, before isolation, spec guard, bias mask and "
+                        "min." },
+        { "InBiasMask", "Bias weight (mask x strength), Turbo: near black = 0, dark red = 1 = routed around the "
+                        "denoiser entirely." },
+        { "DemodGain", "1 / albedo divisor, Turbo on log2 over 1..128: near black = gain 1, dark red = 128." },
+        { "HitDistGate", "Hit distance gate, Turbo: near black = closed, blue/cyan/green = partly, dark red "
+                         "(orange-tan after the game's grading) = open. HitGateParts shows which factor "
+                         "closes it." },
+        { "HitGateParts", "White = hit distance passes. Cyan = closed by roughness, magenta = closed by the "
+                          "emissive override, yellow = closed by the bias mask, black = by more than one." },
+        { "EmissiveCheck", "Grey = raw spec + diffuse albedo summed over RGB, / 6 (physical materials stay under "
+                           "~0.5). Magenta = classified emissive (sum >= 5.4), whether or not the override is "
+                           "switched off." },
+        { "DenoiserFraction", "Share of each pixel sent to the denoiser, Turbo: near black = all in the floor "
+                              "(undenoised), dark red = all denoised." },
+        { "SignalDelta", "|demod specular - demod diffuse| x 100, Turbo: near black everywhere = the split "
+                         "carries no information." },
+        { "RoughnessProbe", "White where roughness (before the emissive cut) is within 0.02 of the Roughness "
+                            "Probe slider." },
+        { "Signal1", "Denoised specular times specular albedo." },
+        { "Signal2", "Denoised diffuse times diffuse albedo." },
+    };
+
+    for (const auto& entry : kLegend)
+    {
+        if (std::strcmp(entry.view, view) == 0)
+            return entry.text;
+    }
+
+    return nullptr;
+}
+
+void FsrdDebugViewLegend(const char* view)
+{
+    const char* text = FsrdLegendText(view);
+
+    if (text == nullptr)
+        return;
+
+    ImGui::PushStyleColor(ImGuiCol_Text, ImGui::GetStyleColorVec4(ImGuiCol_TextDisabled));
+    ImGui::TextWrapped("%s", text);
+    ImGui::PopStyleColor();
+}
+
+std::string FsrdNum(float value)
+{
+    if (std::isnan(value))
+        return "nan";
+
+    if (std::isinf(value))
+        return value > 0.0f ? "inf" : "-inf";
+
+    const float magnitude = std::fabs(value);
+
+    if (magnitude == 0.0f)
+        return "0";
+
+    if (magnitude >= 10000.0f || magnitude < 0.0001f)
+        return std::format("{:.3e}", value);
+
+    if (magnitude >= 100.0f)
+        return std::format("{:.1f}", value);
+
+    return std::format("{:.4f}", value);
+}
+
+std::string FsrdFormat(uint32_t format)
+{
+    const char* name = FSRD::FormatName(format);
+    return name != nullptr ? std::string(name) : std::format("format {}", format);
+}
+
+// One component: temporal average, its spread over time when there is one, and optionally the
+// spatial range over the window in the latest readout.
+std::string FsrdValue(const FsrdStats& stats, int c, bool showRange)
+{
+    std::string text = FsrdNum(stats.emaMean[c]);
+
+    if (stats.emaStd[c] > 0.0f)
+        text += " +-" + FsrdNum(stats.emaStd[c]);
+
+    if (showRange)
+        text += "  [" + FsrdNum(stats.min[c]) + " .. " + FsrdNum(stats.max[c]) + "]";
+
+    return text;
+}
+
+std::string FsrdRgb(const FsrdStats& stats, bool showRange)
+{
+    std::string text = FsrdNum(stats.emaMean[0]) + "  " + FsrdNum(stats.emaMean[1]) + "  " + FsrdNum(stats.emaMean[2]);
+
+    if (showRange)
+    {
+        text += "  [min " + FsrdNum(stats.min[0]) + " " + FsrdNum(stats.min[1]) + " " + FsrdNum(stats.min[2]) +
+                ", max " + FsrdNum(stats.max[0]) + " " + FsrdNum(stats.max[1]) + " " + FsrdNum(stats.max[2]) + "]";
+    }
+
+    return text;
+}
+
+std::string FsrdShare(float share)
+{
+    if (share <= 0.001f)
+        return "no";
+
+    if (share >= 0.999f)
+        return "yes";
+
+    return std::format("{:.0f}% of the window", share * 100.0f);
+}
+
+struct FsrdRow
+{
+    bool section = false;
+    std::string label;
+    std::string value;
+    std::string note;
+};
+
+std::vector<FsrdRow> FsrdBuildProbeRows(const FSRD::ProbeReadout& probe, bool showRange)
+{
+    std::vector<FsrdRow> rows;
+
+    const auto S = [&](fp::Slot slot) -> const FsrdStats& { return probe.slots[slot]; };
+    const auto B = [&](fp::Box box) -> const FsrdStats& { return probe.boxes[box]; };
+    const auto V = [&](const FsrdStats& stats, int c) { return FsrdValue(stats, c, showRange); };
+    const auto C = [&](const FsrdStats& stats) { return FsrdRgb(stats, showRange); };
+    const auto Section = [&](const char* name) { rows.push_back({ true, name, {}, {} }); };
+    const auto Row = [&](std::string label, std::string value, std::string note = {})
+    { rows.push_back({ false, std::move(label), std::move(value), std::move(note) }); };
+
+    Section("Game inputs");
+    Row("Colour (raw)", C(S(fp::RawColor)), "luminance " + V(S(fp::RawColor), 3));
+    Row("Diffuse albedo", C(S(fp::RawDiffAlbedo)));
+    Row("Specular albedo", C(S(fp::RawSpecAlbedo)));
+    Row("Albedo sum", V(S(fp::RawSpecAlbedo), 3),
+        S(fp::RawSpecAlbedo).emaMean[3] >= 5.4f ? "INSIDE the emissive band (5.4 - 5.9)"
+                                                : "below the emissive band (starts at 5.4)");
+    Row("Roughness", V(S(fp::Roughness), 0), "after exponent " + V(S(fp::Roughness), 1));
+    Row("Bias mask", V(S(fp::RawDiffAlbedo), 3), "weight after strength " + V(S(fp::SpecUsed), 3));
+    Row("Specular hit distance", V(S(fp::HitDist), 0));
+
+    Section("Shim decisions");
+    Row("Emissive score", V(S(fp::Roughness), 2),
+        "applied " + V(S(fp::Roughness), 3) + " (1 = roughness 0, diffuse 0, spec 0.1, gate closed)");
+    Row("Skip path", FsrdShare(S(fp::HitDist).emaMean[3]), "sky or near-black albedo, bypasses everything");
+    Row("Hit distance gate", V(S(fp::HitDist), 2),
+        "roughness " + FsrdNum(S(fp::GateTerms).emaMean[0]) + " x emissive " + FsrdNum(S(fp::GateTerms).emaMean[1]) +
+            " x bias " + FsrdNum(S(fp::GateTerms).emaMean[2]));
+    Row("Hit distance sent", V(S(fp::HitDist), 1));
+    Row("Roughness sent", V(S(fp::GateTerms), 3));
+    Row("Specular share of split", V(S(fp::DemodSpec), 3));
+
+    Section("Floor split");
+    Row("Floor (a-trous)", C(S(fp::FloorIn)), "luminance " + V(S(fp::FloorIn), 3));
+    Row("Floor used", C(S(fp::FloorUsed)), "after isolation, spec guard, bias mask and min");
+    Row("Denoiser share", V(S(fp::FloorUsed), 3), "luminance of (raw - floor) / raw");
+    Row("Floor similarity", V(S(fp::DiffUsed), 3));
+    Row("Raw - floor", C(S(fp::DenoiserColor)));
+    Row("Demodulation gain", V(S(fp::DenoiserColor), 3));
+
+    Section("Sent to the denoiser");
+    Row("Signal 1 (specular, demod.)", C(S(fp::DemodSpec)), "alpha = hit distance sent");
+    Row("Signal 2 (diffuse, demod.)", C(S(fp::DemodDiff)), "alpha " + V(S(fp::DemodDiff), 3));
+    Row("Specular albedo used", C(S(fp::SpecUsed)),
+        probe.hasBoxes ? "stored " + C(B(fp::SpecAlbedoTex)) + " as " + FsrdFormat(probe.boxFormats[fp::SpecAlbedoTex])
+                       : std::string());
+    Row("Diffuse albedo used", C(S(fp::DiffUsed)),
+        probe.hasBoxes ? "stored " + C(B(fp::DiffAlbedoTex)) + " as " + FsrdFormat(probe.boxFormats[fp::DiffAlbedoTex])
+                       : std::string());
+    Row("Skip signal (around it)", C(S(fp::SkipOut)), "alpha " + V(S(fp::SkipOut), 3));
+
+    Section("After the denoiser");
+
+    if (probe.hasBoxes)
+    {
+        Row("Denoised specular (demod.)", C(B(fp::DenoisedSpec)));
+        Row("Denoised diffuse (demod.)", C(B(fp::DenoisedDiff)));
+        Row("Composited (to the upscaler)", C(B(fp::Composited)), "raw was " + C(S(fp::RawColor)));
+    }
+    else
+    {
+        Row("Not available", "", "this debug view bypasses the denoiser");
+    }
+
+    Section("Geometry");
+    Row("Linear depth", V(S(fp::DepthMotion), 0), "log-normalised " + V(S(fp::DepthMotion), 1));
+    Row("Motion vector (input units)",
+        FsrdNum(S(fp::DepthMotion).emaMean[2]) + ", " + FsrdNum(S(fp::DepthMotion).emaMean[3]));
+    Row("Depth delta", V(S(fp::Geometry), 0));
+    Row("Normal length", V(S(fp::Geometry), 1));
+    Row("N.V", V(S(fp::Geometry), 2), "negative = normal faces away from the reconstructed camera");
+    Row("Residual to skip", V(S(fp::Geometry), 3), "luminance");
+
+    return rows;
+}
+
+struct FsrdAbSwitch
+{
+    const char* label;
+    CustomOptional<bool>* option;
+    const char* help;
+};
+
+std::vector<FsrdAbSwitch> FsrdAbSwitches(Config* config)
+{
+    return {
+        { "No emissive override", &config->FfxDenoiserAbNoEmissive,
+          "Never reinterpret a pixel as emissive. The override fires where the raw\n"
+          "spec + diffuse albedo sum is above 5.4 (both buffers near white) and\n"
+          "forces roughness 0, diffuse 0, spec albedo 0.1 and closes the hit\n"
+          "distance gate. Suspected on the Turbo-R's paint; EmissiveCheck shows\n"
+          "where it fires." },
+        { "Hit distance on rough surfaces", &config->FfxDenoiserAbGateNoRoughness,
+          "Audit finding 7. The shim ramps the specular hit distance to 0 between\n"
+          "roughness 0.15 and 0.30; in 1.2 a 0 means 'reflection at contact', not\n"
+          "'unknown'. This keeps sending the game's value." },
+        { "Hit distance on bias-masked pixels", &config->FfxDenoiserAbGateNoBias,
+          "Keeps sending the hit distance where the game's bias mask is set." },
+        { "Soft min clamped at 0", &config->FfxDenoiserAbSoftMinNonNeg,
+          "Audit finding 1. Only matters with Floor Soft Min > 0: the soft min\n"
+          "can go negative, which adds light in dark areas." },
+        { "Skip alpha from the final floor", &config->FfxDenoiserAbSkipAlphaFinal,
+          "Audit finding 2. The Correlation Bias blend uses the skip signal's\n"
+          "alpha as the floor's luminance, but it was taken before isolation,\n"
+          "spec guard, bias mask and min. Only matters with Correlation Bias > 0." },
+        { "Skipped pixels inactive", &config->FfxDenoiserAbSkippedInactive,
+          "Audit finding 6. Sky and near-black albedo pixels are sent with alpha\n"
+          "0, i.e. as valid black samples the denoiser may mix into neighbours.\n"
+          "Sends -1 (inactive) instead, as the 1.2 docs ask. Look for dark\n"
+          "fringes along the sky and emissive edges." },
+        { "First floor pass not in place", &config->FfxDenoiserAbFloorNoAlias,
+          "Audit finding 4. The first a-trous pass reads and writes the same\n"
+          "texture: a race, and a D3D12 state violation. Writes it to the spare\n"
+          "buffer instead. Look for blocky 8x8 artefacts or floor changes." },
+        { "Declare signal resource states", &config->FfxDenoiserAbDeclaredStates,
+          "Audit finding 5. Tells the denoiser the states its signal inputs and\n"
+          "outputs are actually in (shader read / UAV) instead of 'compute read'\n"
+          "for both. The SDK issues its barriers from, and back to, those." },
+        { "16-bit albedo", &config->FfxDenoiserAbAlbedo16,
+          "Audit finding 3. Stores both albedo textures as RGBA16F instead of\n"
+          "RGBA8, so the composition remodulates with the albedo the shim\n"
+          "demodulated with. Candidate for banding and fringes on dark glossy\n"
+          "surfaces. Recreates the feature: denoiser history restarts." },
+        { "Denoiser 1.2 default tuning", &config->FfxDenoiserAbSdkDefaults,
+          "Audit finding 10. Uses the SDK's own values for the six tuning\n"
+          "sliders at the top instead of forcing the sliders' values.\n"
+          "Diagnostics > Denoiser tuning lists both." },
+    };
+}
+
+std::string FsrdAbSummary(Config* config)
+{
+    std::string on;
+
+    for (const auto& abSwitch : FsrdAbSwitches(config))
+    {
+        if (abSwitch.option->value_or_default())
+            on += (on.empty() ? "" : ", ") + std::string(abSwitch.label);
+    }
+
+    return std::format("master {}; selected: {}", config->FfxDenoiserAbActive.value_or_default() ? "ON" : "OFF",
+                       on.empty() ? "none" : on);
+}
+
+const char* FsrdDebugViewName(State& state, uint64_t mode)
+{
+    const auto it = state.ffxDenoiserDebugModeNames.find(mode);
+    return (it != state.ffxDenoiserDebugModeNames.end() && it->second != nullptr) ? it->second : "?";
+}
+
+std::string FsrdBuildReport(Config* config, State& state, const FSRD::ProbeReadout& probe, bool probeOn,
+                            const FSRD::FrameInfo& frame, const std::vector<FSRD::InputInfo>& inputs,
+                            const std::array<FSRD::TuningEntry, 6>& tuning,
+                            const std::deque<FSRD::RuntimeMessage>& messages, uint64_t messagesTotal)
+{
+    std::string out;
+    const auto Line = [&](const std::string& text)
+    {
+        out += text;
+        out += '\n';
+    };
+
+    Line(std::format("=== FSR-RR report: frame {}, debug view {} ===", frame.frame,
+                     FsrdDebugViewName(state, config->FfxDenoiserDebugMode.value_or_default())));
+    Line(std::format("Denoiser {}: {}; {}; {}; last dispatch {}", frame.denoiserVersion, frame.signalText,
+                     frame.createText, frame.dispatchText, FSRD::ReturnCodeName(frame.lastDispatchCode)));
+    Line(std::format("Render {}x{} -> {}x{}; signal states declared as-is: {}; albedo textures {}; message "
+                     "callback {}",
+                     frame.renderWidth, frame.renderHeight, frame.targetWidth, frame.targetHeight,
+                     frame.declaredStatesFixed ? "yes" : "no", frame.albedo16 ? "RGBA16F" : "RGBA8",
+                     frame.messageCallback ? "installed" : "not accepted"));
+    Line("A/B: " + FsrdAbSummary(config));
+    Line(std::format("Tuning sliders: disocclusion {}, normal strength {}, stability bias {}, max radiance {}, "
+                     "radiance clip {}, kernel relaxation {}",
+                     FsrdNum(config->FfxDenoiserDisocThreshold.value_or_default()),
+                     FsrdNum(config->FfxDenoiserCrossBlNormStr.value_or_default()),
+                     FsrdNum(config->FfxDenoiserStabilityBias.value_or_default()),
+                     FsrdNum(config->FfxDenoiserMaxRadiance.value_or_default()),
+                     FsrdNum(config->FfxDenoiserRadianceClip.value_or_default()),
+                     FsrdNum(config->FfxDenoiserGaussKernRelax.value_or_default())));
+    Line(std::format("Shim sliders: correlation bias {}, floor isolation {}, bias mask {}, detail boost {}, "
+                     "normal sharpness {}, albedo guide {}, luma symmetry {}, grazing {}, soft min {}, roughness "
+                     "exponent {}, hit distance scale {}, spec guard {}, split prior {}",
+                     FsrdNum(config->FfxDenoiserCorrelationBias.value_or_default()),
+                     FsrdNum(config->FfxDenoiserFloorIsolation.value_or_default()),
+                     FsrdNum(config->FfxDenoiserBiasMaskStrength.value_or_default()),
+                     FsrdNum(config->FfxDenoiserFloorDetailBoost.value_or_default()),
+                     FsrdNum(config->FfxDenoiserFloorNormalSharpness.value_or_default()),
+                     FsrdNum(config->FfxDenoiserFloorAlbedoGuide.value_or_default()),
+                     FsrdNum(config->FfxDenoiserFloorLumSymmetry.value_or_default()),
+                     FsrdNum(config->FfxDenoiserFloorGrazingSharpness.value_or_default()),
+                     FsrdNum(config->FfxDenoiserFloorSoftMin.value_or_default()),
+                     FsrdNum(config->FfxDenoiserRoughnessExponent.value_or_default()),
+                     FsrdNum(config->FfxDenoiserHitDistScale.value_or_default()),
+                     FsrdNum(config->FfxDenoiserFloorSpecGuard.value_or_default()),
+                     FsrdNum(config->FfxDenoiserSplitPrior.value_or_default())));
+    Line(std::format("Buckets: diffuse as direct {}, specular as direct {}; flip view z {}",
+                     config->FfxDenoiserDiffuseAsDirect.value_or_default() ? "on" : "off",
+                     config->FfxDenoiserSpecularAsDirect.value_or_default() ? "on" : "off",
+                     config->FfxDenoiserFlipViewZ.value_or_default() ? "on" : "off"));
+
+    if (probeOn && probe.valid)
+    {
+        Line(std::format("Probe: pixel ({}, {}) of {}x{}, window {}x{}, readout of frame {}, average of {}",
+                         probe.centerX, probe.centerY, probe.renderWidth, probe.renderHeight, 2 * probe.radius + 1,
+                         2 * probe.radius + 1, probe.frame, probe.emaSamples));
+
+        for (const auto& row : FsrdBuildProbeRows(probe, true))
+        {
+            if (row.section)
+                Line("  -- " + row.label);
+            else
+                Line("  " + row.label + ": " + row.value + (row.note.empty() ? "" : "   (" + row.note + ")"));
+        }
+    }
+
+    Line("Denoiser tuning (1.2 default [query] / in force [last configure]):");
+
+    for (const auto& entry : tuning)
+    {
+        Line(std::format("  {}: {} [{}] / {} [{}]", entry.name, FsrdNum(entry.sdkDefault),
+                         FSRD::ReturnCodeName(entry.queryCode), FsrdNum(entry.applied),
+                         FSRD::ReturnCodeName(entry.applyCode)));
+    }
+
+    Line(std::format("Camera: near {}, far {}{}; {}-handed (A {}, B {}, W {}); depth {}{}; vertical FOV {:.2f} "
+                     "deg; jitter ({}, {}) px; MV scale ({}, {}); roughness {}; reset {}",
+                     FsrdNum(frame.nearPlane), FsrdNum(frame.farPlane), frame.infiniteFar ? " (infinite)" : "",
+                     frame.rightHanded ? "right" : "left", FsrdNum(frame.projA), FsrdNum(frame.projB),
+                     FsrdNum(frame.projW), frame.depthInverted ? "inverted" : "not inverted",
+                     frame.hwDepth ? ", hardware" : ", linear", frame.fovVerticalDeg, FsrdNum(frame.jitterPx[0]),
+                     FsrdNum(frame.jitterPx[1]), FsrdNum(frame.mvScale[0]), FsrdNum(frame.mvScale[1]),
+                     frame.roughnessPacked ? "packed in normals.a" : "separate", frame.reset ? "set" : "clear"));
+    Line("Game inputs:");
+
+    for (const auto& input : inputs)
+    {
+        Line(std::format("  {}: {}", input.name,
+                         input.present ? std::format("{} {}x{}", FsrdFormat(input.format), input.width, input.height)
+                                       : std::string("missing")));
+    }
+
+    Line(std::format("Runtime messages: {} distinct, {} total", messages.size(), messagesTotal));
+
+    for (const auto& message : messages)
+        Line(std::format("  [{}] x{} {}", message.type == 0 ? "error" : "warning", message.count, message.text));
+
+    return out;
+}
+} // namespace
+
+void MenuCommon::RenderFsrdDebugTools(RenderMenuContext& ctx)
+{
+    auto& state = ctx.state;
+    auto config = ctx.config;
+    auto& io = ctx.io;
+
+    // Copy what the shim published, then render from the copy
+    FSRD::ProbeReadout probe;
+    FSRD::FrameInfo frame;
+    std::vector<FSRD::InputInfo> inputs;
+    std::array<FSRD::TuningEntry, 6> tuning;
+    std::deque<FSRD::RuntimeMessage> messages;
+    uint64_t messagesTotal = 0;
+
+    {
+        auto& diagnostics = FSRD::Diagnostics::Instance();
+        std::scoped_lock lock(diagnostics.Mutex);
+        probe = diagnostics.Probe;
+        frame = diagnostics.Frame;
+        inputs = diagnostics.Inputs;
+        tuning = diagnostics.Tuning;
+        messages = diagnostics.Messages;
+        messagesTotal = diagnostics.MessagesTotal;
+    }
+
+    static bool showRange = false;
+    const bool probeOn = config->FfxDenoiserProbe.value_or_default();
+    const ImVec2 display = io.DisplaySize;
+
+    const auto CopyReport = [&]()
+    {
+        const std::string report =
+            FsrdBuildReport(config, state, probe, probeOn, frame, inputs, tuning, messages, messagesTotal);
+        ImGui::SetClipboardText(report.c_str());
+        LOG_INFO("FSR-RR report (copied to the clipboard)\n{}", report);
+
+        ImGuiToast notification { ImGuiToastType::Success, 2500 };
+        notification.setTitle("FSR-RR report copied (and logged)");
+        ImGui::InsertNotification(notification);
+    };
+
+    // Pixel probe --------------------------------------------------------------------------------
+    ImGui::SeparatorText("Pixel Probe");
+
+    if (bool enabled = probeOn; ImGui::Checkbox("Pixel probe", &enabled))
+        config->FfxDenoiserProbe = enabled;
+    ShowHelpMarker("Exact numbers for a small window of pixels: what the game\n"
+                   "hands over, what the shim decides, what it sends to the\n"
+                   "denoiser and what comes back, averaged over the window.\n"
+                   "Right-click the game image (outside the menu) to move it.\n"
+                   "Reading it does not change the image.");
+
+    if (probeOn)
+    {
+        if (float v = config->FfxDenoiserProbeX.value_or_default();
+            ImGui::SliderFloat("Probe X", &v, 0.0f, 1.0f, "%.3f"))
+            config->FfxDenoiserProbeX = v;
+
+        if (float v = config->FfxDenoiserProbeY.value_or_default();
+            ImGui::SliderFloat("Probe Y", &v, 0.0f, 1.0f, "%.3f"))
+            config->FfxDenoiserProbeY = v;
+
+        if (int v = config->FfxDenoiserProbeRadius.value_or_default();
+            ImGui::SliderInt("Probe radius", &v, 0, FSRD::Probe::kMaxRadius))
+            config->FfxDenoiserProbeRadius = v;
+        ShowHelpMarker("Half-width of the window in render pixels:\n"
+                       "0 = 1 pixel, 1 = 3x3, 2 = 5x5, 4 = 9x9.");
+
+        if (int v = config->FfxDenoiserProbeAverage.value_or_default(); ImGui::SliderInt("Probe average", &v, 1, 120))
+            config->FfxDenoiserProbeAverage = v;
+        ShowHelpMarker("Readouts in the running average. The +- after a value\n"
+                       "is its spread over those readouts (temporal noise).\n"
+                       "Restarts when the window, a switch or the view changes.");
+
+        ImGui::Checkbox("Show min/max over the window", &showRange);
+
+        if (display.x > 0.0f && display.y > 0.0f)
+        {
+            // Right-click on the game image moves the window there
+            if (ImGui::IsMouseClicked(ImGuiMouseButton_Right) && !ImGui::IsWindowHovered(ImGuiHoveredFlags_AnyWindow))
+            {
+                config->FfxDenoiserProbeX = std::clamp(io.MousePos.x / display.x, 0.0f, 1.0f);
+                config->FfxDenoiserProbeY = std::clamp(io.MousePos.y / display.y, 0.0f, 1.0f);
+            }
+
+            // Marker around the window actually read (the shim keeps it off the edges)
+            float centerX = config->FfxDenoiserProbeX.value_or_default() * display.x;
+            float centerY = config->FfxDenoiserProbeY.value_or_default() * display.y;
+            float halfX = 4.0f;
+            float halfY = 4.0f;
+
+            if (probe.valid && probe.renderWidth > 0 && probe.renderHeight > 0)
+            {
+                const float scaleX = display.x / float(probe.renderWidth);
+                const float scaleY = display.y / float(probe.renderHeight);
+                centerX = (float(probe.centerX) + 0.5f) * scaleX;
+                centerY = (float(probe.centerY) + 0.5f) * scaleY;
+                halfX = std::max((float(probe.radius) + 0.5f) * scaleX, 3.0f);
+                halfY = std::max((float(probe.radius) + 0.5f) * scaleY, 3.0f);
+            }
+
+            ImDrawList* draw = ImGui::GetForegroundDrawList();
+            const ImU32 colors[2] = { IM_COL32(0, 0, 0, 220), IM_COL32(255, 0, 255, 255) };
+            const float widths[2] = { 3.5f, 1.5f };
+            constexpr float arm = 16.0f;
+
+            for (int pass = 0; pass < 2; pass++)
+            {
+                draw->AddRect(ImVec2(centerX - halfX, centerY - halfY), ImVec2(centerX + halfX, centerY + halfY),
+                              colors[pass], 0.0f, 0, widths[pass]);
+                draw->AddLine(ImVec2(centerX - halfX - arm, centerY), ImVec2(centerX - halfX - 3.0f, centerY),
+                              colors[pass], widths[pass]);
+                draw->AddLine(ImVec2(centerX + halfX + 3.0f, centerY), ImVec2(centerX + halfX + arm, centerY),
+                              colors[pass], widths[pass]);
+                draw->AddLine(ImVec2(centerX, centerY - halfY - arm), ImVec2(centerX, centerY - halfY - 3.0f),
+                              colors[pass], widths[pass]);
+                draw->AddLine(ImVec2(centerX, centerY + halfY + 3.0f), ImVec2(centerX, centerY + halfY + arm),
+                              colors[pass], widths[pass]);
+            }
+        }
+
+        // The readout gets its own window so it can sit beside the marker
+        ImGui::SetNextWindowPos(ImVec2(display.x * 0.60f, display.y * 0.06f), ImGuiCond_FirstUseEver);
+
+        if (ImGui::Begin("FSR-RR Pixel Probe", nullptr,
+                         ImGuiWindowFlags_AlwaysAutoResize | ImGuiWindowFlags_NoFocusOnAppearing))
+        {
+            if (!probe.valid)
+            {
+                ImGui::TextDisabled("Waiting for the first readout (a few frames)...");
+            }
+            else
+            {
+                ImGui::Text("Pixel (%d, %d) of %u x %u, window %d x %d, frame %llu, average of %u", probe.centerX,
+                            probe.centerY, probe.renderWidth, probe.renderHeight, 2 * probe.radius + 1,
+                            2 * probe.radius + 1, (unsigned long long) probe.frame, probe.emaSamples);
+                ImGui::Text("Debug view: %s | A/B %s",
+                            FsrdDebugViewName(state, config->FfxDenoiserDebugMode.value_or_default()),
+                            config->FfxDenoiserAbActive.value_or_default() ? "ON" : "OFF");
+
+                if (ImGui::Button("Copy report##fsrdProbe"))
+                    CopyReport();
+                ShowHelpMarker("Copies everything (probe, settings, A/B switches,\n"
+                               "tuning, camera, inputs, runtime messages) as text\n"
+                               "and writes the same to OptiScaler.log.");
+
+                if (ImGui::BeginTable("fsrdProbeTable", 3,
+                                      ImGuiTableFlags_RowBg | ImGuiTableFlags_BordersInnerV |
+                                          ImGuiTableFlags_SizingFixedFit))
+                {
+                    for (const auto& row : FsrdBuildProbeRows(probe, showRange))
+                    {
+                        ImGui::TableNextRow();
+                        ImGui::TableNextColumn();
+
+                        if (row.section)
+                        {
+                            ImGui::TextColored(ImVec4(1.0f, 0.55f, 1.0f, 1.0f), "%s", row.label.c_str());
+                            continue;
+                        }
+
+                        ImGui::TextUnformatted(row.label.c_str());
+                        ImGui::TableNextColumn();
+                        ImGui::TextUnformatted(row.value.c_str());
+                        ImGui::TableNextColumn();
+                        ImGui::TextDisabled("%s", row.note.c_str());
+                    }
+
+                    ImGui::EndTable();
+                }
+            }
+        }
+
+        ImGui::End();
+    }
+
+    // A/B switches --------------------------------------------------------------------------------
+    ImGui::SeparatorText("Troubleshooting A/B");
+
+    if (bool active = config->FfxDenoiserAbActive.value_or_default(); ImGui::Checkbox("A/B switches active", &active))
+        config->FfxDenoiserAbActive = active;
+    ShowHelpMarker("Master switch over everything below, so a chosen set flips\n"
+                   "as one. Bind a key to it (Keybinds > FSR-RR A/B switches)\n"
+                   "to compare with the menu closed; a toast names the state,\n"
+                   "which also labels a screenshot taken right after.\n"
+                   "Everything below off = the shim exactly as before.");
+
+    for (const auto& abSwitch : FsrdAbSwitches(config))
+    {
+        if (bool v = abSwitch.option->value_or_default(); ImGui::Checkbox(abSwitch.label, &v))
+            *abSwitch.option = v;
+        ShowHelpMarker(abSwitch.help);
+    }
+
+    if (!config->FfxDenoiserAbActive.value_or_default())
+        ImGui::TextDisabled("Master switch off: none of these are applied.");
+
+    // Diagnostics ---------------------------------------------------------------------------------
+    ImGui::SeparatorText("Diagnostics");
+
+    if (ImGui::Button("Copy report##fsrdDiagnostics"))
+        CopyReport();
+    ShowHelpMarker("Everything below, the settings and the probe (when on)\n"
+                   "as text in the clipboard and in OptiScaler.log.");
+
+    if (ImGui::TreeNode("Denoiser tuning: 1.2 defaults vs in force"))
+    {
+        if (ImGui::BeginTable("fsrdTuning", 3,
+                              ImGuiTableFlags_RowBg | ImGuiTableFlags_BordersInnerV | ImGuiTableFlags_SizingFixedFit))
+        {
+            ImGui::TableSetupColumn("Setting");
+            ImGui::TableSetupColumn("1.2 default");
+            ImGui::TableSetupColumn("In force");
+            ImGui::TableHeadersRow();
+
+            for (const auto& entry : tuning)
+            {
+                ImGui::TableNextRow();
+                ImGui::TableNextColumn();
+                ImGui::TextUnformatted(entry.name);
+                ImGui::TableNextColumn();
+
+                if (entry.queryCode == 0)
+                    ImGui::TextUnformatted(FsrdNum(entry.sdkDefault).c_str());
+                else
+                    ImGui::TextDisabled("query %s", FSRD::ReturnCodeName(entry.queryCode));
+
+                ImGui::TableNextColumn();
+
+                if (entry.applyCode > 0)
+                    ImGui::Text("%s (configure %s)", FsrdNum(entry.applied).c_str(),
+                                FSRD::ReturnCodeName(entry.applyCode));
+                else
+                    ImGui::TextUnformatted(FsrdNum(entry.applied).c_str());
+            }
+
+            ImGui::EndTable();
+        }
+
+        if (ImGui::Button("Copy 1.2 defaults to the sliders"))
+        {
+            // Same order as FfxApiConfigureDenoiserKey 1..6
+            CustomOptional<float>* sliders[6] = {
+                &config->FfxDenoiserCrossBlNormStr, &config->FfxDenoiserStabilityBias,
+                &config->FfxDenoiserMaxRadiance,    &config->FfxDenoiserRadianceClip,
+                &config->FfxDenoiserGaussKernRelax, &config->FfxDenoiserDisocThreshold
+            };
+
+            for (size_t i = 0; i < tuning.size(); i++)
+            {
+                if (tuning[i].queryCode == 0)
+                    *sliders[i] = tuning[i].sdkDefault;
+            }
+        }
+        ShowHelpMarker("Puts the SDK's own defaults into the six sliders at the\n"
+                       "top, to tune from there. The 'Denoiser 1.2 default\n"
+                       "tuning' switch uses them without touching the sliders.");
+
+        ImGui::TreePop();
+    }
+
+    if (ImGui::TreeNode("Denoiser, camera and frame"))
+    {
+        ImGui::Text("Denoiser %s", frame.denoiserVersion.c_str());
+        ImGui::Text("Buckets: %s", frame.signalText.c_str());
+        ImGui::Text("Context: %s", frame.createText.c_str());
+        ImGui::Text("Dispatch: %s, last result %s", frame.dispatchText.c_str(),
+                    FSRD::ReturnCodeName(frame.lastDispatchCode));
+        ImGui::Text("Runtime message callback: %s", frame.messageCallback ? "installed" : "not accepted (see log)");
+        ImGui::Text("Signal states declared as-is: %s, albedo textures %s", frame.declaredStatesFixed ? "yes" : "no",
+                    frame.albedo16 ? "RGBA16F" : "RGBA8");
+        ImGui::Text("Render %u x %u -> %u x %u, frame %llu", frame.renderWidth, frame.renderHeight, frame.targetWidth,
+                    frame.targetHeight, (unsigned long long) frame.frame);
+        ImGui::Text("Near %s, far %s%s", FsrdNum(frame.nearPlane).c_str(), FsrdNum(frame.farPlane).c_str(),
+                    frame.infiniteFar ? " (infinite)" : "");
+        ImGui::Text("View space %s-handed (projection A %s, B %s, W %s)", frame.rightHanded ? "right" : "left",
+                    FsrdNum(frame.projA).c_str(), FsrdNum(frame.projB).c_str(), FsrdNum(frame.projW).c_str());
+        ImGui::Text("Depth %s, %s; vertical FOV %.2f deg", frame.depthInverted ? "inverted" : "not inverted",
+                    frame.hwDepth ? "hardware" : "linear", frame.fovVerticalDeg);
+        ImGui::Text("Jitter (%s, %s) px, MV scale (%s, %s)", FsrdNum(frame.jitterPx[0]).c_str(),
+                    FsrdNum(frame.jitterPx[1]).c_str(), FsrdNum(frame.mvScale[0]).c_str(),
+                    FsrdNum(frame.mvScale[1]).c_str());
+        ImGui::Text("Camera position (%.2f, %.2f, %.2f)", frame.camPos[0], frame.camPos[1], frame.camPos[2]);
+        ImGui::Text("Roughness %s, reset flag %s", frame.roughnessPacked ? "packed in normals.a" : "separate texture",
+                    frame.reset ? "set" : "clear");
+        ImGui::Text("Denoiser %s, upscaler %s this frame", frame.denoiseBypassed ? "bypassed" : "running",
+                    frame.upscaleBypassed ? "bypassed" : "running");
+        ImGui::TreePop();
+    }
+
+    if (ImGui::TreeNode("Game inputs"))
+    {
+        if (ImGui::BeginTable("fsrdInputs", 3,
+                              ImGuiTableFlags_RowBg | ImGuiTableFlags_BordersInnerV | ImGuiTableFlags_SizingFixedFit))
+        {
+            for (const auto& input : inputs)
+            {
+                ImGui::TableNextRow();
+                ImGui::TableNextColumn();
+                ImGui::TextUnformatted(input.name.c_str());
+                ImGui::TableNextColumn();
+
+                if (!input.present)
+                {
+                    ImGui::TextDisabled("missing");
+                    continue;
+                }
+
+                ImGui::TextUnformatted(FsrdFormat(input.format).c_str());
+                ImGui::TableNextColumn();
+                ImGui::Text("%llu x %u", (unsigned long long) input.width, input.height);
+            }
+
+            ImGui::EndTable();
+        }
+
+        ImGui::TreePop();
+    }
+
+    const std::string messagesLabel =
+        std::format("Runtime messages ({} distinct, {} total)###fsrdMessages", messages.size(), messagesTotal);
+
+    if (ImGui::TreeNode(messagesLabel.c_str()))
+    {
+        if (!frame.messageCallback)
+            ImGui::TextDisabled("The denoiser DLL did not accept the message callback (see the log).");
+        else if (messages.empty())
+            ImGui::TextDisabled("None yet. 'Enable Validation' makes the denoiser check its inputs.");
+
+        for (const auto& message : messages)
+        {
+            ImGui::TextWrapped("[%s] x%llu  %s", message.type == 0 ? "error" : "warning",
+                               (unsigned long long) message.count, message.text.c_str());
+        }
+
+        ImGui::TreePop();
+    }
+}
+
 void MenuCommon::RenderActiveUpscalerSettings(RenderMenuContext& ctx)
 {
     auto& state = ctx.state;
@@ -3126,6 +3952,9 @@ void MenuCommon::RenderActiveUpscalerSettings(RenderMenuContext& ctx)
 
                         ImGui::EndCombo();
                     }
+
+                    // What the selected view's colours mean (24 Sep)
+                    FsrdDebugViewLegend(currentEnum);
                 }
 
                 if (float v = config->FfxDenoiserCorrelationBias.value_or_default();
@@ -3269,6 +4098,9 @@ void MenuCommon::RenderActiveUpscalerSettings(RenderMenuContext& ctx)
                 ShowHelpMarker("Smooths the clamp of the floor against raw colour.\n"
                                "An exact min() creases where the two fields cross.\n"
                                "0 = exact min().");
+
+                // Pixel probe, A/B switches for the audit findings, diagnostics (24 Sep)
+                RenderFsrdDebugTools(ctx);
 
                 ImGui::Spacing();
                 ImGui::Spacing();
@@ -7383,11 +8215,15 @@ void MenuCommon::RenderKeybindSettings(RenderMenuContext& ctx)
         static auto fpsOverlay = Keybind("FPS Overlay", 11);
         static auto fpsOverlayCycle = Keybind("FPS Overlay Cycle", 12);
         static auto fgEnable = Keybind("Frame Generation", 13);
+        static auto fsrdAb = Keybind("FSR-RR A/B switches", 14);
+        static auto fsrdDebugView = Keybind("FSR-RR debug view on/off", 15);
 
         menu.Render(config->ShortcutKey);
         fpsOverlay.Render(config->FpsShortcutKey);
         fpsOverlayCycle.Render(config->FpsCycleShortcutKey);
         fgEnable.Render(config->FGShortcutKey);
+        fsrdAb.Render(config->FfxDenoiserAbShortcutKey);
+        fsrdDebugView.Render(config->FfxDenoiserDebugViewShortcutKey);
     }
 }
 
@@ -8001,6 +8837,8 @@ void KeyUp(UINT vKey)
     inputFps = vKey == Config::Instance()->FpsShortcutKey.value_or_default();
     inputFG = vKey == Config::Instance()->FGShortcutKey.value_or_default();
     inputFpsCycle = vKey == Config::Instance()->FpsCycleShortcutKey.value_or_default();
+    inputFsrdAb = vKey == Config::Instance()->FfxDenoiserAbShortcutKey.value_or_default();
+    inputFsrdDebugView = vKey == Config::Instance()->FfxDenoiserDebugViewShortcutKey.value_or_default();
 }
 
 bool MenuCommon::RenderMenu()

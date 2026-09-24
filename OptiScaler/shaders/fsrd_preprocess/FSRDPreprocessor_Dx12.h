@@ -33,6 +33,16 @@ class FSRDPreprocessor_Dx12
         // Mode 2 path now. Bit 3 deliberately left unused rather than renumbering HasBiasMask.
         HasBiasMask = 1 << 4, // InBiasMask holds a real DLSS bias-current-color mask
 
+        // Troubleshooting (24 Sep). A clear bit reproduces the previous behaviour exactly. The Ab*
+        // bits are A/B switches for the pipeline audit's findings (claude/fsrd-pipeline-audit.md).
+        Probe = 1 << 5,              // Write pixel probe records (see FSRDDiagnostics.h)
+        AbNoEmissive = 1 << 6,       // Never reinterpret a pixel as emissive
+        AbGateNoRoughness = 1 << 7,  // Hit distance gate ignores roughness (finding 7)
+        AbGateNoBias = 1 << 8,       // Hit distance gate ignores the bias mask
+        AbSoftMinNonNeg = 1 << 9,    // Clamp the soft-min floor at zero (finding 1)
+        AbSkipAlphaFinal = 1 << 10,  // SkipSignal alpha from the final floor (finding 2)
+        AbSkippedInactive = 1 << 11, // Skipped pixels sent as inactive, alpha -1 (finding 6)
+
         Debug = 1 << 16, // Denoiser and upscaler bypassed for debug out if this is set
         DebugModeMask = 0xFF << 16,
 
@@ -69,6 +79,9 @@ class FSRDPreprocessor_Dx12
 
         DebugSignalDelta = 22 << 17 | Debug,    // |demodSpecular - demodDiffuse|; blue everywhere = degenerate split
         DebugRoughnessProbe = 23 << 17 | Debug, // White where roughness matches RoughnessProbe
+
+        DebugEmissiveCheck = 24 << 17 | Debug, // Grey = albedo sum / 6, magenta = classified emissive
+        DebugHitGateParts = 25 << 17 | Debug,  // RGB = roughness / emissive / bias terms of the gate
     };
 
     enum class CompFlags : uint32_t
@@ -175,6 +188,19 @@ class FSRDPreprocessor_Dx12
         float RoughnessProbe;
 
         uint32_t Flags; // Dynamic configuration flags. See: ConfigFlags
+
+        // Pixel probe (24 Sep). Position in [0, 1] of the render area, half-width in pixels
+        // (clamped to FSRD::Probe::kMaxRadius). Only used when Flags has ConvFlags::Probe.
+        float ProbeU;
+        float ProbeV;
+        int ProbeRadius;
+
+        // Frames folded into the probe's temporal average (1 = no averaging).
+        int ProbeAverageFrames;
+
+        // A/B, audit finding 4: the first a-trous pass reads and writes the same texture. When set,
+        // it writes into the other scratch buffer instead. C++ side only.
+        bool FloorNoAlias;
     };
 
     /**
@@ -208,9 +234,11 @@ class FSRDPreprocessor_Dx12
     /**
      * @brief (Re)allocates internal resources to match the specified render resolution.
      * Must be called at least once before any Dispatch().
+     * @param albedo16 A/B, audit finding 3: store both albedo textures as RGBA16_FLOAT instead of
+     * RGBA8_UNORM, so remodulation multiplies by (nearly) the same albedo demodulation divided by.
      * @return True if resize succeeded
      */
-    bool SetMaxRenderSize(uint32_t width, uint32_t height);
+    bool SetMaxRenderSize(uint32_t width, uint32_t height, bool albedo16 = false);
 
     /**
      * @brief Executes the input conversion shader.
@@ -231,7 +259,7 @@ class FSRDPreprocessor_Dx12
      */
     void GetSignal(ffxDispatchDescDenoiserIndirectDiffuse& indirectDiffuseSignal,
                    ffxDispatchDescDenoiserIndirectSpecular& indirectSpecularSignal,
-                   ffxDispatchDescDenoiser& dispatchDesc) const;
+                   ffxDispatchDescDenoiser& dispatchDesc, bool declareActualStates = false) const;
 
     /**
      * @brief Composes the denoised radiance from FSR-RR with the skip signal previously generated
@@ -249,6 +277,11 @@ class FSRDPreprocessor_Dx12
      */
     bool Blit(ID3D12GraphicsCommandList* cmdList, ID3D12Resource* srcTex, ID3D12Resource* dstTex,
               DirectX::XMFLOAT2 dim = {}) const;
+
+    /**
+     * @brief True if the albedo textures were created as RGBA16_FLOAT (A/B, audit finding 3).
+     */
+    bool IsAlbedo16() const;
 
   private:
     struct Impl;

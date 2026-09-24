@@ -164,7 +164,17 @@ struct alignas(16) Constants
     float RoughnessProbe;     // Target for the roughness null-probe debug view
 
     float _Padding;
+
+    // Pixel probe window (24 Sep): centre pixel and half-width. Only read with ConvFlags::Probe.
+    int32_t ProbeCenterX;
+    int32_t ProbeCenterY;
+    int32_t ProbeRadius;
+    uint32_t _Padding2;
 };
+
+// Matches the cbuffer layout DXC reports for CB_Packing in FSRDInputConv.hlsl.
+static_assert(sizeof(Constants) == 272, "Conversion::Constants out of sync with CB_Packing");
+static_assert(offsetof(Constants, ProbeCenterX) == 256, "Conversion::Constants out of sync with CB_Packing");
 
 union Input
 {
@@ -241,6 +251,10 @@ union Output
 
     ID3D12Resource* AsRawArray[kCount];
 };
+
+// UAVs bound to the packing shader: the Output resources above (u0-u6), then the pixel probe
+// texture (u7, 24 Sep). The probe is kept out of Output because Output is the denoiser's input set.
+constexpr UINT kUavCount = Output::kCount + 1;
 } // namespace Conversion
 
 namespace Composition
