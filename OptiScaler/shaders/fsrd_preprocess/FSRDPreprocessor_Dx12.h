@@ -35,14 +35,16 @@ class FSRDPreprocessor_Dx12
 
         // Troubleshooting (24 Sep). A clear bit reproduces the previous behaviour exactly. The Ab*
         // bits are A/B switches for the pipeline audit's findings (claude/fsrd-pipeline-audit.md).
-        Probe = 1 << 5,               // Write pixel probe records (see FSRDDiagnostics.h)
-        AbNoEmissive = 1 << 6,        // Never reinterpret a pixel as emissive
-        AbGateNoRoughness = 1 << 7,   // Hit distance gate ignores roughness (finding 7)
-        AbGateNoBias = 1 << 8,        // Hit distance gate ignores the bias mask
-        AbSoftMinNonNeg = 1 << 9,     // Clamp the soft-min floor at zero (finding 1)
-        AbSkipAlphaFinal = 1 << 10,   // SkipSignal alpha from the final floor (finding 2)
-        AbSkippedInactive = 1 << 11,  // Skipped pixels sent as inactive, alpha -1 (finding 6)
-        AbCameraDepthDelta = 1 << 12, // Old camera-only depth delta (object-motion delta is the default)
+        Probe = 1 << 5,                // Write pixel probe records (see FSRDDiagnostics.h)
+        AbNoEmissive = 1 << 6,         // Never reinterpret a pixel as emissive
+        AbGateNoRoughness = 1 << 7,    // Hit distance gate ignores roughness (finding 7)
+        AbGateNoBias = 1 << 8,         // Hit distance gate ignores the bias mask
+        AbSoftMinNonNeg = 1 << 9,      // Clamp the soft-min floor at zero (finding 1)
+        AbSkipAlphaFinal = 1 << 10,    // SkipSignal alpha from the final floor (finding 2)
+        AbSkippedInactive = 1 << 11,   // Skipped pixels sent as inactive, alpha -1 (finding 6)
+        AbCameraDepthDelta = 1 << 12,  // Old camera-only depth delta (object-motion delta is the default)
+        AbHitDistRecon = 1 << 13,      // Fill missing spec hit distances from neighbours (25 Sep)
+        AbSpecFollowSurface = 1 << 14, // Hit distance -> 0 on self-moving pixels (25 Sep)
 
         Debug = 1 << 16, // Denoiser and upscaler bypassed for debug out if this is set
         DebugModeMask = 0xFF << 16,
@@ -85,6 +87,7 @@ class FSRDPreprocessor_Dx12
         DebugHitGateParts = 25 << 17 | Debug,      // RGB = roughness / emissive / bias terms of the gate
         DebugMotionConsistency = 26 << 17 | Debug, // game motion vectors vs camera matrices (24 Sep)
         DebugFireflyClamp = 27 << 17 | Debug,      // pixels the firefly clamp scales down (25 Sep)
+        DebugOutSpecHitDist = 28 << 17 | Debug,    // spec hit distance as sent (25 Sep)
     };
 
     enum class CompFlags : uint32_t

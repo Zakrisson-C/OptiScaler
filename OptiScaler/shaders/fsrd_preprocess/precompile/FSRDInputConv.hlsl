@@ -33,6 +33,8 @@ static const uint2 s_ThreadGroupSize = uint2(THREAD_GROUP_SIZE_X, THREAD_GROUP_S
 #define FLAGS_AB_SKIP_ALPHA_FINAL       (1 << 10) // SkipSignal alpha from the final floor (finding 2)
 #define FLAGS_AB_SKIPPED_INACTIVE       (1 << 11) // Skipped pixels sent as inactive, alpha -1 (finding 6)
 #define FLAGS_AB_CAMERA_DEPTH_DELTA     (1 << 12) // Old camera-only depth delta (no object-motion delta)
+#define FLAGS_AB_HITDIST_RECON          (1 << 13) // Fill missing (<= 0) spec hit distances from neighbours
+#define FLAGS_AB_SPEC_FOLLOW_SURFACE    (1 << 14) // Hit distance -> 0 on self-moving pixels (reflections ride the surface)
 
 // Debug Flags
 #define FLAGS_DEBUG                     (1 << 16)
@@ -78,6 +80,8 @@ static const uint2 s_ThreadGroupSize = uint2(THREAD_GROUP_SIZE_X, THREAD_GROUP_S
 #define FLAGS_DEBUG_MOTION_CONSISTENCY  (26 << 17 | FLAGS_DEBUG)
 // 25 Sep. Pixels the firefly clamp scales down: red, brighter = more removed.
 #define FLAGS_DEBUG_FIREFLY_CLAMP       (27 << 17 | FLAGS_DEBUG)
+// 25 Sep. Specular hit distance as sent to the denoiser (after gate, scale and reconstruction).
+#define FLAGS_DEBUG_OUT_SPEC_HIT_DIST   (28 << 17 | FLAGS_DEBUG)
 
 // DLSS-RR Inputs
 Texture2D<half3> InColor : register(t0); // RGB - NVSDK_NGX_Parameter_Color
@@ -256,6 +260,45 @@ float GetFireflyScale(const int2 px)
 
     const float limit = FireflyClampK * neighbourMax;
     return (center > limit && center > 0.0f) ? limit / center : 1.0f;
+}
+
+// Specular hit distance reconstruction (25 Sep, A/B).
+//
+// The game's specular hit distance is 0 (or missing) on a large share of pixels - where the path
+// didn't sample the specular lobe, going by the InSpecHitDist view's magenta speckle. 1.2 reads 0 as a
+// valid "reflection at the surface", so those pixels reproject their reflection with the surface while
+// their neighbours reproject it with the reflected image: a salt-and-pepper mix of two motions that the
+// history can only resolve by blurring. NRD fills such holes from neighbours before denoising; this does
+// the same over a 5x5 window, weighted by depth and normal agreement so hits from another surface don't
+// leak in. No valid neighbour (a sky reflection, say) = unchanged.
+float ReconstructHitDist(const int2 px, const float depth, const float3 normal)
+{
+    float sum = 0.0f;
+    float weightSum = 0.0f;
+    const float3 n = normalize(normal);
+    const float depthTolerance = 0.05f * depth + 0.01f;
+
+    [unroll]
+    for (int y = -2; y <= 2; y++)
+    {
+        [unroll]
+        for (int x = -2; x <= 2; x++)
+        {
+            const int2 p = clamp(px + int2(x, y), int2(0, 0), int2(DstTexSize.xy) - 1);
+            const float h = InSpecHitDist[p];
+
+            if (!(h > 0.0f))
+                continue;
+
+            const float depthWeight = saturate(1.0f - abs(abs(InDepth[p]) - depth) / depthTolerance);
+            const float normalWeight = pow(saturate(dot(n, normalize(InNormals[p].rgb))), 8.0f);
+            const float w = depthWeight * normalWeight;
+            sum += w * h;
+            weightSum += w;
+        }
+    }
+
+    return (weightSum > 1e-4f) ? sum / weightSum : 0.0f;
 }
 
 float3 GetViewSpacePos(const int2 px)
@@ -592,7 +635,20 @@ void CSMain(uint3 groupID : SV_GroupID, uint3 gtID : SV_GroupThreadID)
             const float gateEmissive = 1.0f - isEmissive;
             const float gateBias = IsSet(FLAGS_AB_GATE_NO_BIAS) ? 1.0f : (1.0f - biasWeight);
             const float canUseHitDist = gateRoughness * gateEmissive * gateBias;
-            hitDist = GetSafeFP16(InSpecHitDist[px] * HitDistScale * canUseHitDist);
+            // 25 Sep A/Bs: reconstruct missing hit distances; let reflections on surfaces that move by
+            // themselves (the driven car) reproject with the surface, since the denoiser's reflected-
+            // image reprojection assumes the mirror is static in the world.
+            float inHitDist = InSpecHitDist[px];
+
+            [branch]
+            if (IsSet(FLAGS_AB_HITDIST_RECON) && !(inHitDist > 0.0f) && canUseHitDist > 0.0f)
+                inHitDist = ReconstructHitDist(px, viewSpacePos.z, worldSurfaceNormal.rgb);
+
+            const float followSurface = IsSet(FLAGS_AB_SPEC_FOLLOW_SURFACE)
+                                          ? smoothstep(0.75f, 1.5f, length(motionErrorPx))
+                                          : 0.0f;
+
+            hitDist = GetSafeFP16(inHitDist * HitDistScale * canUseHitDist * (1.0f - followSurface));
             dbgHitGate = canUseHitDist;
             dbgGateParts = float3(gateRoughness, gateEmissive, gateBias);
 
@@ -696,6 +752,13 @@ void CSMain(uint3 groupID : SV_GroupID, uint3 gtID : SV_GroupThreadID)
                 // 25 Sep. Red where the firefly clamp scales a pixel down, brighter = more of it
                 // removed (full red at 75% or more), over a dim grey copy of the raw luminance.
                 // Nothing red with Firefly Clamp at 0.
+                // 25 Sep. Hit distance as sent: same colours as InSpecHitDist (magenta = 0).
+                // Compare the two to see the gate, the reconstruction and follow-surface at work.
+                case FLAGS_DEBUG_OUT_SPEC_HIT_DIST:
+                    debugColor = (hitDist <= 0.0f) ? float3(1.0f, 0.0f, 1.0f)
+                                                   : TurboColormap(log2(1.0f + float(hitDist)) * (1.0f / 7.0f));
+                    break;
+
                 case FLAGS_DEBUG_FIREFLY_CLAMP:
                     debugColor = lerp(0.25f * saturate(rawLuma).xxx, float3(1.0f, 0.0f, 0.0f),
                                       saturate((1.0f - fireflyScale) * (4.0f / 3.0f)));

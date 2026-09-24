@@ -581,6 +581,10 @@ class Config
     // CameraDepthDelta (25 Sep): the old camera-only depth delta. The object-motion delta (last frame's
     // depth on pixels that move by themselves) is the default since Chris confirmed it while driving.
     CustomOptional<bool> FfxDenoiserAbCameraDepthDelta { false };
+    // HitDistRecon (25 Sep): fill missing specular hit distances from neighbours. SpecFollowSurface: hit
+    // distance -> 0 on pixels that move by themselves, so their reflections reproject with the surface.
+    CustomOptional<bool> FfxDenoiserAbHitDistRecon { false };
+    CustomOptional<bool> FfxDenoiserAbSpecFollowSurface { false };
 
     // Keys: flip FfxDenoiserAbActive, and toggle between no debug view and the last one used.
     CustomOptional<int> FfxDenoiserAbShortcutKey { UnboundKey };

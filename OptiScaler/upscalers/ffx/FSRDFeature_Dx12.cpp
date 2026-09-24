@@ -242,6 +242,7 @@ enum class DebugModes : uint64_t
     HitGateParts = FSRDConvFlags::DebugHitGateParts,           // 24 Sep
     MotionConsistency = FSRDConvFlags::DebugMotionConsistency, // 24 Sep
     FireflyClamp = FSRDConvFlags::DebugFireflyClamp,           // 25 Sep
+    OutSpecHitDist = FSRDConvFlags::DebugOutSpecHitDist,       // 25 Sep
 
     CompositionDebugOffset = 16u,
     CompositionDebug = (uint64_t) FSRDCompFlags::Debug << CompositionDebugOffset,
@@ -317,6 +318,7 @@ constexpr auto kDebugModes = std::to_array<ModeNamePair>({
     { "HitGateParts", (uint64_t) DebugModes::HitGateParts },
     { "MotionConsistency", (uint64_t) DebugModes::MotionConsistency },
     { "FireflyClamp", (uint64_t) DebugModes::FireflyClamp },
+    { "OutSpecHitDist", (uint64_t) DebugModes::OutSpecHitDist },
 
     { "Signal1", (uint64_t) DebugModes::Signal1 },
     { "Signal2", (uint64_t) DebugModes::Signal2 },
@@ -1171,6 +1173,8 @@ bool FSRDFeatureDx12::ConvertDenoiserBuffers(ID3D12GraphicsCommandList* InComman
         _convDesc.Flags |= AbFlag(cfg.FfxDenoiserAbSkipAlphaFinal, FSRDConvFlags::AbSkipAlphaFinal);
         _convDesc.Flags |= AbFlag(cfg.FfxDenoiserAbSkippedInactive, FSRDConvFlags::AbSkippedInactive);
         _convDesc.Flags |= AbFlag(cfg.FfxDenoiserAbCameraDepthDelta, FSRDConvFlags::AbCameraDepthDelta);
+        _convDesc.Flags |= AbFlag(cfg.FfxDenoiserAbHitDistRecon, FSRDConvFlags::AbHitDistRecon);
+        _convDesc.Flags |= AbFlag(cfg.FfxDenoiserAbSpecFollowSurface, FSRDConvFlags::AbSpecFollowSurface);
         _convDesc.FloorNoAlias = abActive && cfg.FfxDenoiserAbFloorNoAlias.value_or_default();
 
         // Pixel probe

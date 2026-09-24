@@ -2559,6 +2559,9 @@ const char* FsrdLegendText(const char* view)
                                "point. Black = agree; brightness = disagreement, full at 4 px; hue = direction. "
                                "Moving cars and people light up legitimately; static scenery should stay black "
                                "while you move and turn." },
+        { "OutSpecHitDist", "Specular hit distance as sent to the denoiser, after the gate, Hit Distance Scale and "
+                            "the reconstruction switch. Same colours as InSpecHitDist: magenta = 0, Turbo on "
+                            "log2(1 + d) over 0..127." },
         { "FireflyClamp", "Red where the firefly clamp scales a pixel down, brighter = more removed, over a dim "
                           "grey copy of the raw image. Nothing red with Firefly Clamp at 0." },
         { "EmissiveCheck", "Grey = raw spec + diffuse albedo summed over RGB, / 6 (physical materials stay under "
@@ -2809,6 +2812,17 @@ std::vector<FsrdAbSwitch> FsrdAbSwitches(Config* config)
           "threw its history away. It now comes from last frame's depth where the\n"
           "game's motion disagrees with the camera (MotionConsistency lit).\n"
           "Ticking this brings the old delta back." },
+        { "Hit distance reconstruction", &config->FfxDenoiserAbHitDistRecon,
+          "Many pixels arrive with specular hit distance 0 (magenta speckle in\n"
+          "InSpecHitDist), which 1.2 reads as 'reflection at the surface'. Those\n"
+          "pixels reproject their reflection with the surface, their neighbours\n"
+          "with the reflected image. This fills them from matching neighbours\n"
+          "(5x5, same depth and normal). Compare OutSpecHitDist with it on and off." },
+        { "Reflections follow moving surfaces", &config->FfxDenoiserAbSpecFollowSurface,
+          "The denoiser moves a reflection with the reflected image, assuming the\n"
+          "mirror stands still. On the car you drive it doesn't. This sends hit\n"
+          "distance 0 where the surface moves by itself (MotionConsistency lit),\n"
+          "so reflections there reproject with the paint instead." },
         { "Old frame index (resets every frame)", &config->FfxDenoiserAbFrameIndexDoubled,
           "The transplant's bug, kept for comparison. The frame index handed to\n"
           "the denoiser advanced by 2 per frame (the upscaler's evaluate counts a\n"
