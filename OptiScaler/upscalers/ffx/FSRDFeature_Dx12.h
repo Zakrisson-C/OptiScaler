@@ -79,7 +79,23 @@ class FSRDFeatureDx12 : public FFXFeatureDx12
 
     ffxContext _pDenoiserCtx;
     ffxCreateContextDescDenoiser _denoiserCtxDesc;
-    DenoiserConfiguration _denoiserSettings;
+    DenoiserConfiguration _denoiserSettings; // values currently in force in the denoiser context
+
+    // Troubleshooting (24 Sep, see shaders/fsrd_preprocess/FSRDDiagnostics.h)
+    DenoiserConfiguration _sdkDefaults {}; // denoiser 1.2's own defaults, as queried at context creation
+    std::array<int, DenoiserConfiguration::kCount> _sdkDefaultCodes {}; // ffxReturnCode_t of each query
+    std::array<int, DenoiserConfiguration::kCount> _applyCodes {};      // last configure result, -1 = never
+    bool _albedo16AtCreate = false;  // A/B finding 3 as it was when the converter was created
+    bool _messageCallbackOk = false; // the denoiser DLL accepted the runtime message callback
+    int _lastDispatchCode = -1;      // ffxReturnCode_t of this frame's dispatch, -1 = not dispatched
+    uint32_t _lastDispatchFlags = 0; // dispatchDesc.flags of the last dispatch
+    float _lastProjTerms[3] = {};    // projection A, B, W as GetViewPlanes read them
+    bool _lastInfiniteFar = false;
+    bool _lastRightHanded = false;
+    bool _lastDeclaredStates = false;
+
+    static bool DesiredAlbedo16();
+    void PublishDiagnostics(const NVSDK_NGX_Parameter& inParams, bool denoiseBypassed, bool upscaleBypassed);
 
     static bool s_isHWDepth;
     static bool s_isRoughnessPacked;
@@ -101,6 +117,19 @@ class FSRDFeatureDx12 : public FFXFeatureDx12
     // FFXFeatureDx12::EvaluateInternal() advances it as well, so it moves by 2 per frame whenever the
     // upscaler runs, and 1.2 resets its history on every frame index jump.
     uint32_t _denoiserFrameIndex = 0;
+
+    // Frame index continuity counters for the diagnostics panel (24 Sep), see FSRD::FrameInfo.
+    bool _dispatchedOnContext = false; // cleared when a context is created
+    uint32_t _lastDispatchedIndex = 0;
+    uint64_t _dispatchCount = 0;
+    uint64_t _indexGapCount = 0;
+    uint32_t _lastGapFrames = 0;
+    uint64_t _contextStartCount = 0;
+    uint64_t _gameResetCount = 0;
+
+    // Camera movement over the last frame (diagnostics, 24 Sep)
+    float _lastCamMove = 0.0f;
+    float _lastCamTurnDeg = 0.0f;
 
     // Matrices
     DirectX::XMMATRIX _invViewMatrix;  // Camera rotation and translation

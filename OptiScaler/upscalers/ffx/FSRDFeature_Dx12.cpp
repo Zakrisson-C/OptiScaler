@@ -5,8 +5,11 @@
 #include "hooks/Streamline_Hooks.h"
 #include "FSRDFeature_Dx12.h"
 #include "shaders/fsrd_preprocess/FSRDPreprocessor_Dx12.h"
+#include "shaders/fsrd_preprocess/FSRDDiagnostics.h"
 #include "MathUtils.h"
 #include "OptiTexts.h"
+#include <atomic>
+#include <format>
 
 using namespace DirectX;
 using namespace OptiMath;
@@ -235,6 +238,9 @@ enum class DebugModes : uint64_t
     DenoiserFraction = FSRDConvFlags::DebugDenoiserFraction,
     SignalDelta = FSRDConvFlags::DebugSignalDelta,
     RoughnessProbe = FSRDConvFlags::DebugRoughnessProbe,
+    EmissiveCheck = FSRDConvFlags::DebugEmissiveCheck,         // 24 Sep
+    HitGateParts = FSRDConvFlags::DebugHitGateParts,           // 24 Sep
+    MotionConsistency = FSRDConvFlags::DebugMotionConsistency, // 24 Sep
 
     CompositionDebugOffset = 16u,
     CompositionDebug = (uint64_t) FSRDCompFlags::Debug << CompositionDebugOffset,
@@ -306,6 +312,9 @@ constexpr auto kDebugModes = std::to_array<ModeNamePair>({
     { "DenoiserFraction", (uint64_t) DebugModes::DenoiserFraction },
     { "SignalDelta", (uint64_t) DebugModes::SignalDelta },
     { "RoughnessProbe", (uint64_t) DebugModes::RoughnessProbe },
+    { "EmissiveCheck", (uint64_t) DebugModes::EmissiveCheck },
+    { "HitGateParts", (uint64_t) DebugModes::HitGateParts },
+    { "MotionConsistency", (uint64_t) DebugModes::MotionConsistency },
 
     { "Signal1", (uint64_t) DebugModes::Signal1 },
     { "Signal2", (uint64_t) DebugModes::Signal2 },
@@ -313,6 +322,41 @@ constexpr auto kDebugModes = std::to_array<ModeNamePair>({
 
 bool FSRDFeatureDx12::s_isHWDepth = false;
 bool FSRDFeatureDx12::s_isRoughnessPacked = false;
+
+// FSR-RR runtime messages (24 Sep). The denoiser reports what it rejects - including everything
+// "Enable Validation" (FFX_DENOISER_ENABLE_VALIDATION) checks - through the FFX message callback, and
+// nothing was listening. Each distinct message is logged once and kept with a repeat count for the
+// menu. After 100 distinct messages further ones are only counted, so a message that embeds a frame
+// number cannot flood the log.
+static void FsrdRuntimeMessage(uint32_t type, const wchar_t* message)
+{
+    static std::atomic<int> s_logged { 0 };
+    const std::string text = message != nullptr ? wstring_to_string(std::wstring(message)) : std::string();
+
+    if (!FSRD::Diagnostics::Instance().AddMessage(text, type))
+        return;
+
+    const int logged = ++s_logged;
+
+    if (logged > 100)
+    {
+        if (logged == 101)
+            LOG_WARN("FSR-RR runtime: over 100 distinct messages, further ones only counted in the menu");
+
+        return;
+    }
+
+    if (type == FFX_API_MESSAGE_TYPE_ERROR)
+        LOG_ERROR("FSR-RR runtime: {}", text);
+    else
+        LOG_WARN("FSR-RR runtime: {}", text);
+}
+
+bool FSRDFeatureDx12::DesiredAlbedo16()
+{
+    const auto& cfg = *Config::Instance();
+    return cfg.FfxDenoiserAbActive.value_or_default() && cfg.FfxDenoiserAbAlbedo16.value_or_default();
+}
 
 FSRDFeatureDx12::FSRDFeatureDx12(uint32_t InHandleId, NVSDK_NGX_Parameter* InParameters)
     : FFXFeatureDx12(InHandleId, InParameters), IFeature(InHandleId, InParameters), _pDenoiserCtx(nullptr),
@@ -481,6 +525,25 @@ bool FSRDFeatureDx12::CreateDenoiserContext()
             LOG_ERROR("_denoiserCtx error: {0}", FfxApiProxy::ReturnCodeToString(ret));
             return false;
         }
+
+        _dispatchedOnContext = false;
+    }
+
+    // Runtime messages (24 Sep): route the denoiser's own errors and warnings, and what validation
+    // finds, into the log and the menu. Same configure call FSR FG uses for its context.
+    {
+        ffxConfigureDescGlobalDebug1 debugDesc = {};
+        debugDesc.header.type = FFX_API_CONFIGURE_DESC_TYPE_GLOBALDEBUG1;
+        debugDesc.fpMessage = &FsrdRuntimeMessage;
+        debugDesc.debugLevel = FFX_API_CONFIGURE_GLOBALDEBUG_LEVEL_VERBOSE;
+
+        const ffxReturnCode_t code = FfxApiProxy::D3D12_Configure(&_pDenoiserCtx, &debugDesc.header);
+        _messageCallbackOk = (code == FFX_API_RETURN_OK);
+
+        if (_messageCallbackOk)
+            LOG_INFO("FSR-RR runtime message callback installed");
+        else
+            LOG_WARN("FSR-RR runtime message callback not accepted: {}", FfxApiProxy::ReturnCodeToString(code));
     }
 
     // Query default settings
@@ -492,8 +555,16 @@ bool FSRDFeatureDx12::CreateDenoiserContext()
     if (!FSRDConvShader->IsInit())
         return false;
 
-    if (!FSRDConvShader->SetMaxRenderSize(_denoiserCtxDesc.maxRenderSize.width, _denoiserCtxDesc.maxRenderSize.height))
+    // A/B, audit finding 3: the albedo textures' format is fixed at creation, so it is a create-time
+    // option like the signal buckets (see UpdateSize).
+    _albedo16AtCreate = DesiredAlbedo16();
+
+    if (!FSRDConvShader->SetMaxRenderSize(_denoiserCtxDesc.maxRenderSize.width, _denoiserCtxDesc.maxRenderSize.height,
+                                          _albedo16AtCreate))
         return false;
+
+    if (_albedo16AtCreate)
+        LOG_INFO("FSR-RR A/B: albedo textures created as RGBA16_FLOAT");
 
     return true;
 }
@@ -559,8 +630,9 @@ void FSRDFeatureDx12::UpdateSize()
     // (context, converter buffers) that frames still in flight may be using. Hand it to OptiScaler's
     // own backend-change path instead, which recreates the whole feature and destroys the old one
     // on a 2 s delay (Util::DelayedDestroy) - the path already seen working for FSR-RR in the logs.
-    const bool optionsChanged =
-        _denoiserCtxDesc.signalFlags != DesiredSignalFlags() || _denoiserCtxDesc.flags != DesiredCreateFlags();
+    const bool optionsChanged = _denoiserCtxDesc.signalFlags != DesiredSignalFlags() ||
+                                _denoiserCtxDesc.flags != DesiredCreateFlags() ||
+                                _albedo16AtCreate != DesiredAlbedo16();
 
     if (optionsChanged && !sizeChanged)
     {
@@ -625,6 +697,13 @@ bool FSRDFeatureDx12::EvaluateInternal(ID3D12GraphicsCommandList* InCommandList,
 
     if (uint32_t value = 0; inParams.Get(NVSDK_NGX_Parameter_Reset, &value) == NVSDK_NGX_Result_Success)
         _isInReset = value > 0;
+
+    // Troubleshooting snapshot for the menu (24 Sep). Describes the previous frame's dispatch, which
+    // is close enough for a panel refreshed a few times a second.
+    if (_frameCount % 15 == 0)
+        PublishDiagnostics(inParams, isDenoiseBypassed, isUpscaleBypassed);
+
+    _lastDispatchCode = -1;
 
     // Denoiser start
     ffxDispatchDescDenoiserIndirectDiffuse indirectDiffuseSignal = {};
@@ -692,6 +771,11 @@ bool FSRDFeatureDx12::EvaluateInternal(ID3D12GraphicsCommandList* InCommandList,
                                   .viewportIndex = uint32_t(debugViewport < 0 ? 0 : debugViewport)
             };
         }
+
+        // A/B (24 Sep): the transplant's frame index, which advanced twice per frame and made 1.2 reset its
+        // history on every dispatch. For before/after comparison only.
+        if (cfg.FfxDenoiserAbActive.value_or_default() && cfg.FfxDenoiserAbFrameIndexDoubled.value_or_default())
+            denoiserDesc.frameIndex = (uint32_t) _frameCount;
 
         isDenoiserReady = DispatchDenoiser(InCommandList, denoiserDesc);
 
@@ -860,7 +944,12 @@ bool FSRDFeatureDx12::PrepareDenoiserInput(ID3D12GraphicsCommandList* InCommandL
 
     // Populate resources and link signal headers: dispatchDesc -> indirectSpecularSignal ->
     // indirectDiffuseSignal (see FSRDPreprocessor_Dx12::GetSignal).
-    FSRDConvShader->GetSignal(indirectDiffuseSignal, indirectSpecularSignal, dispatchDesc);
+    //
+    // A/B, audit finding 5 (24 Sep): declare the signal resources in the states they are actually in.
+    const auto& abCfg = *Config::Instance();
+    _lastDeclaredStates =
+        abCfg.FfxDenoiserAbActive.value_or_default() && abCfg.FfxDenoiserAbDeclaredStates.value_or_default();
+    FSRDConvShader->GetSignal(indirectDiffuseSignal, indirectSpecularSignal, dispatchDesc, _lastDeclaredStates);
 
     // Retag to the buckets the context was created with (23 Sep, see DesiredSignalFlags). The direct and
     // indirect per-signal structs are layout-identical ({ header, FfxApiDenoiserSignal }), only the type differs.
@@ -878,6 +967,19 @@ bool FSRDFeatureDx12::PrepareDenoiserInput(ID3D12GraphicsCommandList* InCommandL
 
     if (_isInReset)
         dispatchDesc.flags |= FFX_DENOISER_DISPATCH_RESET;
+
+    // Camera movement over the last frame, for the diagnostics panel (24 Sep): distance moved and the
+    // angle between the previous and current forward axes (row 2 of world-to-view).
+    {
+        const XMVECTOR delta = XMVectorSet(dispatchDesc.cameraPositionDelta.x, dispatchDesc.cameraPositionDelta.y,
+                                           dispatchDesc.cameraPositionDelta.z, 0.0f);
+        _lastCamMove = XMVectorGetX(XMVector3Length(delta));
+
+        const XMVECTOR fwd = XMVector3Normalize(_viewMatrix.r[2]);
+        const XMVECTOR prevFwd = XMVector3Normalize(_prevViewMatrix.r[2]);
+        const float cosTurn = std::clamp(XMVectorGetX(XMVector3Dot(fwd, prevFwd)), -1.0f, 1.0f);
+        _lastCamTurnDeg = std::acos(cosTurn) * (180.0f / 3.14159265f);
+    }
 
     // Update camera position for next frame
     _lastCamPos = camPos;
@@ -1044,11 +1146,39 @@ bool FSRDFeatureDx12::ConvertDenoiserBuffers(ID3D12GraphicsCommandList* InComman
     _convDesc.RoughnessExponent = cfg.FfxDenoiserRoughnessExponent.value_or_default();
     _convDesc.HitDistScale = cfg.FfxDenoiserHitDistScale.value_or_default();
     _convDesc.FloorSpecGuard = cfg.FfxDenoiserFloorSpecGuard.value_or_default();
+    _convDesc.FloorSpecGuardFadeStart = cfg.FfxDenoiserFloorSpecGuardFadeStart.value_or_default();
+    _convDesc.FloorSpecGuardFadeEnd = cfg.FfxDenoiserFloorSpecGuardFadeEnd.value_or_default();
     _convDesc.SplitPriorStrength = cfg.FfxDenoiserSplitPrior.value_or_default();
     _convDesc.RoughnessProbe = cfg.FfxDenoiserRoughnessProbe.value_or_default();
 
     if (s_isRoughnessPacked)
         _convDesc.Flags |= (uint32_t) FSRDConvFlags::IsRoughnessPacked;
+
+    // Troubleshooting (24 Sep). A/B switches for the pipeline audit's findings, all gated by the
+    // master switch so a chosen set flips as one. Each bit off = previous behaviour.
+    {
+        const bool abActive = cfg.FfxDenoiserAbActive.value_or_default();
+        const auto AbFlag = [abActive](const CustomOptional<bool>& option, FSRDConvFlags flag)
+        { return (abActive && option.value_or_default()) ? (uint32_t) flag : 0u; };
+
+        _convDesc.Flags |= AbFlag(cfg.FfxDenoiserAbNoEmissive, FSRDConvFlags::AbNoEmissive);
+        _convDesc.Flags |= AbFlag(cfg.FfxDenoiserAbGateNoRoughness, FSRDConvFlags::AbGateNoRoughness);
+        _convDesc.Flags |= AbFlag(cfg.FfxDenoiserAbGateNoBias, FSRDConvFlags::AbGateNoBias);
+        _convDesc.Flags |= AbFlag(cfg.FfxDenoiserAbSoftMinNonNeg, FSRDConvFlags::AbSoftMinNonNeg);
+        _convDesc.Flags |= AbFlag(cfg.FfxDenoiserAbSkipAlphaFinal, FSRDConvFlags::AbSkipAlphaFinal);
+        _convDesc.Flags |= AbFlag(cfg.FfxDenoiserAbSkippedInactive, FSRDConvFlags::AbSkippedInactive);
+        _convDesc.Flags |= AbFlag(cfg.FfxDenoiserAbCameraDepthDelta, FSRDConvFlags::AbCameraDepthDelta);
+        _convDesc.FloorNoAlias = abActive && cfg.FfxDenoiserAbFloorNoAlias.value_or_default();
+
+        // Pixel probe
+        if (cfg.FfxDenoiserProbe.value_or_default())
+            _convDesc.Flags |= (uint32_t) FSRDConvFlags::Probe;
+
+        _convDesc.ProbeU = std::clamp(cfg.FfxDenoiserProbeX.value_or_default(), 0.0f, 1.0f);
+        _convDesc.ProbeV = std::clamp(cfg.FfxDenoiserProbeY.value_or_default(), 0.0f, 1.0f);
+        _convDesc.ProbeRadius = cfg.FfxDenoiserProbeRadius.value_or_default();
+        _convDesc.ProbeAverageFrames = cfg.FfxDenoiserProbeAverage.value_or_default();
+    }
 
     // Store in column major order for GPU
     XMStoreFloat4x4(&_convDesc.InvViewMatrix, XMMatrixTranspose(_invViewMatrix));
@@ -1060,10 +1190,20 @@ bool FSRDFeatureDx12::ConvertDenoiserBuffers(ID3D12GraphicsCommandList* InComman
     // Previous world to view for linear depth delta
     XMStoreFloat4x4(&_convDesc.PrevViewMatrix, XMMatrixTranspose(_prevViewMatrix));
 
+    // Forward projection, same storage as the inverse above (motion consistency check, 24 Sep)
+    XMStoreFloat4x4(&_convDesc.ProjMatrix, XMMatrixTranspose(_projMatrix));
+
     // Near and far planes
     const ViewPlanes planes = GetViewPlanes(_projMatrix, DepthInverted());
     _convDesc.NearPlane = planes.nearPlane;
     _convDesc.FarPlane = planes.farPlane;
+
+    // Kept for the diagnostics panel (24 Sep) - the same numbers as the one-time "Camera:" log line
+    _lastProjTerms[0] = _projMatrix.r[2].m128_f32[2];
+    _lastProjTerms[1] = _projMatrix.r[2].m128_f32[3];
+    _lastProjTerms[2] = _projMatrix.r[3].m128_f32[2];
+    _lastInfiniteFar = planes.isInfinite;
+    _lastRightHanded = _projMatrix.r[3].m128_f32[2] < 0.0f;
 
     // One-time camera convention report (transplant, 23 Sep) - evidence for the open signed-depth /
     // handedness question in PrepareDenoiserInput. W is the projection's w_clip = W * z_view term:
@@ -1091,39 +1231,68 @@ bool FSRDFeatureDx12::ConvertDenoiserBuffers(ID3D12GraphicsCommandList* InComman
     return true;
 }
 
-static bool TryUpdateOption(const CustomOptional<float>& cfgValue, float& currentValue)
-{
-    if (cfgValue.value_or_default() != currentValue)
-    {
-        currentValue = cfgValue.value_or_default();
-        return true;
-    }
-    else
-        return false;
-}
-
 bool FSRDFeatureDx12::DispatchDenoiser(ID3D12GraphicsCommandList* InCommandList,
                                        const ffxDispatchDescDenoiser& dispatchDesc)
 {
     auto& state = State::Instance();
     const auto& cfg = *Config::Instance();
-    bool cfgChanged = false;
 
-    if (TryUpdateOption(cfg.FfxDenoiserDisocThreshold, _denoiserSettings.m_DisocclusionThreshold))
-        ApplyConfiguration(FFX_API_CONFIGURE_DENOISER_KEY_DISOCCLUSION_THRESHOLD);
-    if (TryUpdateOption(cfg.FfxDenoiserCrossBlNormStr, _denoiserSettings.m_CrossBilateralNormalStrength))
-        ApplyConfiguration(FFX_API_CONFIGURE_DENOISER_KEY_CROSS_BILATERAL_NORMAL_STRENGTH);
-    if (TryUpdateOption(cfg.FfxDenoiserStabilityBias, _denoiserSettings.m_StabilityBias))
-        ApplyConfiguration(FFX_API_CONFIGURE_DENOISER_KEY_STABILITY_BIAS);
-    if (TryUpdateOption(cfg.FfxDenoiserMaxRadiance, _denoiserSettings.m_MaxRadiance))
-        ApplyConfiguration(FFX_API_CONFIGURE_DENOISER_KEY_MAX_RADIANCE);
-    if (TryUpdateOption(cfg.FfxDenoiserRadianceClip, _denoiserSettings.m_RadianceClipStdK))
-        ApplyConfiguration(FFX_API_CONFIGURE_DENOISER_KEY_RADIANCE_CLIP_STD_K);
-    if (TryUpdateOption(cfg.FfxDenoiserGaussKernRelax, _denoiserSettings.m_GaussianKernelRelaxation))
-        ApplyConfiguration(FFX_API_CONFIGURE_DENOISER_KEY_GAUSSIAN_KERNEL_RELAXATION);
+    // Runtime tuning values (24 Sep, audit finding 10). As before, Config's values are forced over the
+    // SDK's defaults and only keys whose target changed are configured. With the SDK-defaults A/B
+    // switch on, every key whose default query succeeded is taken back to denoiser 1.2's own default
+    // instead; switching it off forces Config's values again. Indexed by FfxApiConfigureDenoiserKey - 1.
+    const bool useSdkDefaults =
+        cfg.FfxDenoiserAbActive.value_or_default() && cfg.FfxDenoiserAbSdkDefaults.value_or_default();
+
+    const std::array<float, DenoiserConfiguration::kCount> configValues = {
+        cfg.FfxDenoiserCrossBlNormStr.value_or_default(), cfg.FfxDenoiserStabilityBias.value_or_default(),
+        cfg.FfxDenoiserMaxRadiance.value_or_default(),    cfg.FfxDenoiserRadianceClip.value_or_default(),
+        cfg.FfxDenoiserGaussKernRelax.value_or_default(), cfg.FfxDenoiserDisocThreshold.value_or_default()
+    };
+
+    for (int i = 0; i < DenoiserConfiguration::kCount; i++)
+    {
+        const bool haveDefault = _sdkDefaultCodes[i] == FFX_API_RETURN_OK;
+        const float target = (useSdkDefaults && haveDefault) ? _sdkDefaults.AsArray[i] : configValues[i];
+
+        if (target == _denoiserSettings.AsArray[i])
+            continue;
+
+        const FfxApiConfigureDenoiserKey key = DenoiserConfiguration::GetIndexKey(i);
+        _denoiserSettings.AsArray[i] = target;
+        _applyCodes[i] = ApplyConfiguration(key);
+
+        if (_applyCodes[i] != FFX_API_RETURN_OK)
+            LOG_WARN("FSR-RR configure key {} = {} failed: {}", (int) key, target,
+                     FfxApiProxy::ReturnCodeToString(_applyCodes[i]));
+    }
+
+    // Frame index continuity (24 Sep). Classifies each dispatch the way 1.2's "Frame index jump" check
+    // would see it, so the panel can show whether the shim accounts for every warning.
+    _dispatchCount++;
+
+    if (dispatchDesc.flags & FFX_DENOISER_DISPATCH_RESET)
+        _gameResetCount++;
+
+    if (!_dispatchedOnContext)
+    {
+        _contextStartCount++;
+        _dispatchedOnContext = true;
+    }
+    else if (dispatchDesc.frameIndex != _lastDispatchedIndex + 1)
+    {
+        _indexGapCount++;
+        _lastGapFrames = dispatchDesc.frameIndex - _lastDispatchedIndex - 1;
+        LOG_INFO("FSR-RR frame index gap: {} frame(s) without a denoiser dispatch before index {}", _lastGapFrames,
+                 dispatchDesc.frameIndex);
+    }
+
+    _lastDispatchedIndex = dispatchDesc.frameIndex;
 
     LOG_DEBUG("Dispatching FSR-RR...");
     const ffxReturnCode_t result = FfxApiProxy::D3D12_Dispatch(&_pDenoiserCtx, &dispatchDesc.header);
+    _lastDispatchCode = result;
+    _lastDispatchFlags = dispatchDesc.flags;
 
     if (result != FFX_API_RETURN_OK)
     {
@@ -1143,8 +1312,149 @@ bool FSRDFeatureDx12::DispatchDenoiser(ID3D12GraphicsCommandList* InCommandList,
 
 void FSRDFeatureDx12::SetDefaultConfiguration()
 {
+    // 24 Sep: the queried defaults are kept apart from the values in force, with their return codes,
+    // for the SDK-defaults A/B switch and the diagnostics panel. They were never logged before.
     for (int i = 0; i < DenoiserConfiguration::kCount; i++)
-        SetDefaultConfiguration(DenoiserConfiguration::GetIndexKey(i));
+    {
+        _sdkDefaultCodes[i] = SetDefaultConfiguration(DenoiserConfiguration::GetIndexKey(i));
+        _sdkDefaults.AsArray[i] = _denoiserSettings.AsArray[i];
+        _applyCodes[i] = -1;
+    }
+
+    LOG_INFO("FSR-RR 1.2 defaults: cross bilateral normal strength {} ({}), stability bias {} ({}), "
+             "max radiance {} ({}), radiance clip std k {} ({}), gaussian kernel relaxation {} ({}), "
+             "disocclusion threshold {} ({})",
+             _sdkDefaults.m_CrossBilateralNormalStrength, FSRD::ReturnCodeName(_sdkDefaultCodes[0]),
+             _sdkDefaults.m_StabilityBias, FSRD::ReturnCodeName(_sdkDefaultCodes[1]), _sdkDefaults.m_MaxRadiance,
+             FSRD::ReturnCodeName(_sdkDefaultCodes[2]), _sdkDefaults.m_RadianceClipStdK,
+             FSRD::ReturnCodeName(_sdkDefaultCodes[3]), _sdkDefaults.m_GaussianKernelRelaxation,
+             FSRD::ReturnCodeName(_sdkDefaultCodes[4]), _sdkDefaults.m_DisocclusionThreshold,
+             FSRD::ReturnCodeName(_sdkDefaultCodes[5]));
+}
+
+void FSRDFeatureDx12::PublishDiagnostics(const NVSDK_NGX_Parameter& inParams, bool denoiseBypassed,
+                                         bool upscaleBypassed)
+{
+    const auto& state = State::Instance();
+    const auto& cfg = *Config::Instance();
+
+    FSRD::FrameInfo frame;
+    frame.frame = _frameCount;
+    frame.renderWidth = RenderWidth();
+    frame.renderHeight = RenderHeight();
+    frame.targetWidth = TargetWidth();
+    frame.targetHeight = TargetHeight();
+
+    frame.nearPlane = _convDesc.NearPlane;
+    frame.farPlane = _convDesc.FarPlane;
+    frame.infiniteFar = _lastInfiniteFar;
+    frame.rightHanded = _lastRightHanded;
+    frame.depthInverted = DepthInverted();
+    frame.hwDepth = s_isHWDepth;
+    frame.roughnessPacked = s_isRoughnessPacked;
+    frame.reset = _isInReset;
+    frame.fovVerticalDeg = GetVertFovFromProjectionMatrixRad(_projMatrix) * (180.0f / 3.14159265f);
+    frame.projA = _lastProjTerms[0];
+    frame.projB = _lastProjTerms[1];
+    frame.projW = _lastProjTerms[2];
+    frame.camPos[0] = _invViewMatrix.r[0].m128_f32[3];
+    frame.camPos[1] = _invViewMatrix.r[1].m128_f32[3];
+    frame.camPos[2] = _invViewMatrix.r[2].m128_f32[3];
+
+    inParams.Get(NVSDK_NGX_Parameter_Jitter_Offset_X, &frame.jitterPx[0]);
+    inParams.Get(NVSDK_NGX_Parameter_Jitter_Offset_Y, &frame.jitterPx[1]);
+    inParams.Get(NVSDK_NGX_Parameter_MV_Scale_X, &frame.mvScale[0]);
+    inParams.Get(NVSDK_NGX_Parameter_MV_Scale_Y, &frame.mvScale[1]);
+
+    const int versionIndex = cfg.FfxDenoiserIndex.value_or_default();
+
+    if (versionIndex >= 0 && versionIndex < (int) state.ffxDenoiserVersionNames.size() &&
+        state.ffxDenoiserVersionNames[versionIndex] != nullptr)
+        frame.denoiserVersion = state.ffxDenoiserVersionNames[versionIndex];
+
+    frame.signalFlags = _denoiserCtxDesc.signalFlags;
+    frame.createFlags = _denoiserCtxDesc.flags;
+    frame.dispatchFlags = _lastDispatchFlags;
+    frame.signalText = std::format(
+        "diffuse -> {}, specular -> {}",
+        (frame.signalFlags & FFX_DENOISER_SIGNAL_DIRECT_DIFFUSE) ? "DIRECT_DIFFUSE" : "INDIRECT_DIFFUSE",
+        (frame.signalFlags & FFX_DENOISER_SIGNAL_DIRECT_SPECULAR) ? "DIRECT_SPECULAR" : "INDIRECT_SPECULAR");
+    frame.createText =
+        std::format("debugging {}, validation {}", (frame.createFlags & FFX_DENOISER_ENABLE_DEBUGGING) ? "on" : "off",
+                    (frame.createFlags & FFX_DENOISER_ENABLE_VALIDATION) ? "on" : "off");
+    frame.dispatchText = std::format("non-gamma albedo {}, reset {}",
+                                     (frame.dispatchFlags & FFX_DENOISER_DISPATCH_NON_GAMMA_ALBEDO) ? "on" : "off",
+                                     (frame.dispatchFlags & FFX_DENOISER_DISPATCH_RESET) ? "on" : "off");
+    frame.lastDispatchCode = _lastDispatchCode;
+    frame.denoiseBypassed = denoiseBypassed;
+    frame.upscaleBypassed = upscaleBypassed;
+    frame.declaredStatesFixed = _lastDeclaredStates;
+    frame.albedo16 = FSRDConvShader != nullptr && FSRDConvShader->IsAlbedo16();
+    frame.messageCallback = _messageCallbackOk;
+    frame.camMove = _lastCamMove;
+    frame.camTurnDeg = _lastCamTurnDeg;
+    frame.dispatches = _dispatchCount;
+    frame.indexGaps = _indexGapCount;
+    frame.lastGapFrames = _lastGapFrames;
+    frame.contextStarts = _contextStartCount;
+    frame.gameResets = _gameResetCount;
+
+    // Every DLSS-RR input the game hands over, consumed or not, with its format
+    std::vector<FSRD::InputInfo> inputs;
+
+    const auto AddInput = [&](const char* label, const char* key)
+    {
+        FSRD::InputInfo info;
+        info.name = label;
+        ID3D12Resource* resource = nullptr;
+
+        if (TryGetNGXVoidPointer(inParams, key, resource) && resource != nullptr)
+        {
+            const D3D12_RESOURCE_DESC desc = resource->GetDesc();
+            info.present = true;
+            info.format = (uint32_t) desc.Format;
+            info.width = desc.Width;
+            info.height = desc.Height;
+        }
+
+        inputs.push_back(std::move(info));
+    };
+
+    AddInput("Color", NVSDK_NGX_Parameter_Color);
+    AddInput("Depth", NVSDK_NGX_Parameter_Depth);
+    AddInput("MotionVectors", NVSDK_NGX_Parameter_MotionVectors);
+    AddInput("Normals", NVSDK_NGX_Parameter_GBuffer_Normals);
+    AddInput("Roughness", NVSDK_NGX_Parameter_GBuffer_Roughness);
+    AddInput("DiffuseAlbedo", NVSDK_NGX_Parameter_DiffuseAlbedo);
+    AddInput("SpecularAlbedo", NVSDK_NGX_Parameter_SpecularAlbedo);
+    AddInput("SpecularHitDistance", NVSDK_NGX_Parameter_DLSSD_SpecularHitDistance);
+    AddInput("DiffuseHitDistance", NVSDK_NGX_Parameter_DLSSD_DiffuseHitDistance);
+    AddInput("BiasCurrentColorMask", NVSDK_NGX_Parameter_DLSS_Input_Bias_Current_Color_Mask);
+    AddInput("ColorBeforeParticles", NVSDK_NGX_Parameter_DLSSD_ColorBeforeParticles);
+    AddInput("ColorBeforeTransparency", NVSDK_NGX_Parameter_DLSSD_ColorBeforeTransparency);
+    AddInput("TransparencyLayer", NVSDK_NGX_Parameter_DLSS_TransparencyLayer);
+    AddInput("Output", NVSDK_NGX_Parameter_Output);
+
+    static constexpr std::array<const char*, DenoiserConfiguration::kCount> kTuningNames = {
+        "Cross Bilateral Normal Strength", "Temporal Stability Bias",    "Max Radiance",
+        "Radiance Clip Deviation",         "Gaussian Kernel Relaxation", "Disocclusion Threshold"
+    };
+
+    auto& diagnostics = FSRD::Diagnostics::Instance();
+    std::scoped_lock lock(diagnostics.Mutex);
+
+    diagnostics.Frame = std::move(frame);
+    diagnostics.Inputs = std::move(inputs);
+
+    for (int i = 0; i < DenoiserConfiguration::kCount; i++)
+    {
+        auto& entry = diagnostics.Tuning[i];
+        entry.name = kTuningNames[i];
+        entry.sdkDefault = _sdkDefaults.AsArray[i];
+        entry.queryCode = _sdkDefaultCodes[i];
+        entry.applied = _denoiserSettings.AsArray[i];
+        entry.applyCode = _applyCodes[i];
+    }
 }
 
 ffxReturnCode_t FSRDFeatureDx12::SetDefaultConfiguration(FfxApiConfigureDenoiserKey key)

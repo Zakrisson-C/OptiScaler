@@ -524,6 +524,7 @@ copy NUL "$(SolutionDir)x64\Release\a\!! EXTRACT ALL FILES TO GAME FOLDER !!" /Y
     <ClInclude Include="upscalers\ffx\FFXFeature_Vk.h" />
     <!-- Transplant, 22 Sep (plan §7/Phase 4j) -->
     <ClInclude Include="upscalers\ffx\FSRDFeature_Dx12.h" />
+    <ClInclude Include="shaders\fsrd_preprocess\FSRDDiagnostics.h" />
     <ClInclude Include="shaders\fsrd_preprocess\FSRDPreprocessor_Dx12.h" />
     <ClInclude Include="shaders\fsrd_preprocess\FSRDShaderData.h" />
     <ClInclude Include="shaders\fsrd_preprocess\FSRDShaderUtils.h" />
