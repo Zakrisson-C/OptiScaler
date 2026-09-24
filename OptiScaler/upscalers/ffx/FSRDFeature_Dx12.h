@@ -127,6 +127,10 @@ class FSRDFeatureDx12 : public FFXFeatureDx12
     uint64_t _contextStartCount = 0;
     uint64_t _gameResetCount = 0;
 
+    // Camera movement over the last frame (diagnostics, 24 Sep)
+    float _lastCamMove = 0.0f;
+    float _lastCamTurnDeg = 0.0f;
+
     // Matrices
     DirectX::XMMATRIX _invViewMatrix;  // Camera rotation and translation
     DirectX::XMMATRIX _viewMatrix;     // World to camera space

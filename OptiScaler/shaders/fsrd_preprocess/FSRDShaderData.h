@@ -175,12 +175,16 @@ struct alignas(16) Constants
     float FloorSpecGuardFadeStart;
     float FloorSpecGuardFadeEnd;
     float _Padding3[2];
+
+    // Current view to clip, for the motion consistency check (24 Sep). Debug view / probe only.
+    XMFLOAT4X4 ProjMatrix;
 };
 
 // Matches the cbuffer layout DXC reports for CB_Packing in FSRDInputConv.hlsl.
-static_assert(sizeof(Constants) == 288, "Conversion::Constants out of sync with CB_Packing");
+static_assert(sizeof(Constants) == 352, "Conversion::Constants out of sync with CB_Packing");
 static_assert(offsetof(Constants, ProbeCenterX) == 256, "Conversion::Constants out of sync with CB_Packing");
 static_assert(offsetof(Constants, FloorSpecGuardFadeStart) == 272, "Conversion::Constants out of sync with CB_Packing");
+static_assert(offsetof(Constants, ProjMatrix) == 288, "Conversion::Constants out of sync with CB_Packing");
 
 union Input
 {

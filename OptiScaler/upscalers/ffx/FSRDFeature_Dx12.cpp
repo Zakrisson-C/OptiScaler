@@ -238,8 +238,9 @@ enum class DebugModes : uint64_t
     DenoiserFraction = FSRDConvFlags::DebugDenoiserFraction,
     SignalDelta = FSRDConvFlags::DebugSignalDelta,
     RoughnessProbe = FSRDConvFlags::DebugRoughnessProbe,
-    EmissiveCheck = FSRDConvFlags::DebugEmissiveCheck, // 24 Sep
-    HitGateParts = FSRDConvFlags::DebugHitGateParts,   // 24 Sep
+    EmissiveCheck = FSRDConvFlags::DebugEmissiveCheck,         // 24 Sep
+    HitGateParts = FSRDConvFlags::DebugHitGateParts,           // 24 Sep
+    MotionConsistency = FSRDConvFlags::DebugMotionConsistency, // 24 Sep
 
     CompositionDebugOffset = 16u,
     CompositionDebug = (uint64_t) FSRDCompFlags::Debug << CompositionDebugOffset,
@@ -313,6 +314,7 @@ constexpr auto kDebugModes = std::to_array<ModeNamePair>({
     { "RoughnessProbe", (uint64_t) DebugModes::RoughnessProbe },
     { "EmissiveCheck", (uint64_t) DebugModes::EmissiveCheck },
     { "HitGateParts", (uint64_t) DebugModes::HitGateParts },
+    { "MotionConsistency", (uint64_t) DebugModes::MotionConsistency },
 
     { "Signal1", (uint64_t) DebugModes::Signal1 },
     { "Signal2", (uint64_t) DebugModes::Signal2 },
@@ -966,6 +968,19 @@ bool FSRDFeatureDx12::PrepareDenoiserInput(ID3D12GraphicsCommandList* InCommandL
     if (_isInReset)
         dispatchDesc.flags |= FFX_DENOISER_DISPATCH_RESET;
 
+    // Camera movement over the last frame, for the diagnostics panel (24 Sep): distance moved and the
+    // angle between the previous and current forward axes (row 2 of world-to-view).
+    {
+        const XMVECTOR delta = XMVectorSet(dispatchDesc.cameraPositionDelta.x, dispatchDesc.cameraPositionDelta.y,
+                                           dispatchDesc.cameraPositionDelta.z, 0.0f);
+        _lastCamMove = XMVectorGetX(XMVector3Length(delta));
+
+        const XMVECTOR fwd = XMVector3Normalize(_viewMatrix.r[2]);
+        const XMVECTOR prevFwd = XMVector3Normalize(_prevViewMatrix.r[2]);
+        const float cosTurn = std::clamp(XMVectorGetX(XMVector3Dot(fwd, prevFwd)), -1.0f, 1.0f);
+        _lastCamTurnDeg = std::acos(cosTurn) * (180.0f / 3.14159265f);
+    }
+
     // Update camera position for next frame
     _lastCamPos = camPos;
 
@@ -1174,6 +1189,9 @@ bool FSRDFeatureDx12::ConvertDenoiserBuffers(ID3D12GraphicsCommandList* InComman
     // Previous world to view for linear depth delta
     XMStoreFloat4x4(&_convDesc.PrevViewMatrix, XMMatrixTranspose(_prevViewMatrix));
 
+    // Forward projection, same storage as the inverse above (motion consistency check, 24 Sep)
+    XMStoreFloat4x4(&_convDesc.ProjMatrix, XMMatrixTranspose(_projMatrix));
+
     // Near and far planes
     const ViewPlanes planes = GetViewPlanes(_projMatrix, DepthInverted());
     _convDesc.NearPlane = planes.nearPlane;
@@ -1372,6 +1390,8 @@ void FSRDFeatureDx12::PublishDiagnostics(const NVSDK_NGX_Parameter& inParams, bo
     frame.declaredStatesFixed = _lastDeclaredStates;
     frame.albedo16 = FSRDConvShader != nullptr && FSRDConvShader->IsAlbedo16();
     frame.messageCallback = _messageCallbackOk;
+    frame.camMove = _lastCamMove;
+    frame.camTurnDeg = _lastCamTurnDeg;
     frame.dispatches = _dispatchCount;
     frame.indexGaps = _indexGapCount;
     frame.lastGapFrames = _lastGapFrames;

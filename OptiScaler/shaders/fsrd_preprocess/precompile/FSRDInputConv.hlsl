@@ -72,6 +72,8 @@ static const uint2 s_ThreadGroupSize = uint2(THREAD_GROUP_SIZE_X, THREAD_GROUP_S
 // 24 Sep. Chosen to read unambiguously through the game's tonemapper and grading.
 #define FLAGS_DEBUG_EMISSIVE_CHECK      (24 << 17 | FLAGS_DEBUG)
 #define FLAGS_DEBUG_HIT_GATE_PARTS      (25 << 17 | FLAGS_DEBUG)
+// 24 Sep. Game motion vectors vs the camera matrices: black = agree, see the case below.
+#define FLAGS_DEBUG_MOTION_CONSISTENCY  (26 << 17 | FLAGS_DEBUG)
 
 // DLSS-RR Inputs
 Texture2D<half3> InColor : register(t0); // RGB - NVSDK_NGX_Parameter_Color
@@ -161,6 +163,9 @@ cbuffer CB_Packing : register(b0)
     float FloorSpecGuardFadeStart;
     float FloorSpecGuardFadeEnd;
     float2 _Padding3;
+
+    // Current (unjittered) view to clip, for the MotionConsistency view and probe row (24 Sep).
+    float4x4 ProjMatrix;
 };
 
 bool IsSet(uint mask) { return (Flags & mask) == mask; }
@@ -181,7 +186,7 @@ uint GetDebugMode() { return (Flags & FLAGS_DEBUG_MODE_MASK); }
 #define PROBE_DEMOD_SPEC        11 // signal 1 rgb (demodulated specular), specular split fraction
 #define PROBE_DEMOD_DIFF        12 // signal 2 rgb (demodulated diffuse), signal 2 alpha
 #define PROBE_SKIP_OUT          13 // skip signal rgb as written, alpha as written
-#define PROBE_DEPTH_MOTION      14 // linear depth, compressed depth, motion x, motion y (input units)
+#define PROBE_DEPTH_MOTION      14 // linear depth, camera-model motion error (px), motion x, motion y (input units)
 #define PROBE_GEOMETRY          15 // depth delta, input normal length, N.V, residual luminance
 #define PROBE_SLOT_COUNT        16
 
@@ -391,7 +396,18 @@ void CSMain(uint3 groupID : SV_GroupID, uint3 gtID : SV_GroupThreadID)
     const float3 motionOut = float3(motionIn, depthDelta);
     OutMotion[px] = half4(motionOut, 0.0f);
 
-    PROBE_WRITE(PROBE_DEPTH_MOTION, float4(viewSpacePos.z, compressedDepth, motionIn));
+    // Camera-model motion (24 Sep): where this pixel lands in the previous frame according to the
+    // matrices alone (previous view, current projection), against the game's motion vectors. For
+    // static geometry the two agree to a fraction of a pixel if the matrices describe the game's
+    // camera. The depth delta above and the denoiser's own reprojection of reflections (camera
+    // matrices + cameraPositionDelta + hit distance) rest on the same camera model, so a mismatch
+    // here on static scenery is a mismatch there. Only feeds the probe and the debug view.
+    const float4 prevClip = mul(ProjMatrix, float4(mul(PrevViewMatrix, float4(worldSpacePos, 1.0f)).xyz, 1.0f));
+    const float2 pixelUV = (float2(px) + 0.5f) * DstTexSize.zw;
+    const float2 cameraMotion = NDCToUV(prevClip.xy / prevClip.w) - pixelUV;
+    const float2 motionErrorPx = (cameraMotion - motionIn) * DstTexSize.xy;
+
+    PROBE_WRITE(PROBE_DEPTH_MOTION, float4(viewSpacePos.z, length(motionErrorPx), motionIn));
 
     if (((compressedDepth < 0.99f) && totalAlbedo > 1e-2f) || IsSet(FLAGS_DEBUG))
     {
@@ -578,6 +594,15 @@ void CSMain(uint3 groupID : SV_GroupID, uint3 gtID : SV_GroupThreadID)
                 // (sum >= 5.4), where the override forces roughness 0, diffuse 0, spec 0.1 and
                 // closes the hit distance gate. Reports the test, whether or not the override
                 // is switched off.
+                // 24 Sep. Difference between the game's motion vectors and the motion the camera
+                // matrices predict for a static point. Black = agree. Brightness = disagreement,
+                // full at 4 px; hue = its direction. Moving cars and people light up legitimately.
+                // Static scenery lighting up while the camera moves or turns means the matrices
+                // (or the previous view) don't describe the game's camera.
+                case FLAGS_DEBUG_MOTION_CONSISTENCY:
+                    debugColor = VisualizeMotionVec(motionErrorPx, 0.25f);
+                    break;
+
                 case FLAGS_DEBUG_EMISSIVE_CHECK:
                     debugColor = (emissiveScore > 0.0f) ? float3(1.0f, 0.0f, 1.0f) : saturate(totalAlbedo / 6.0f).xxx;
                     break;

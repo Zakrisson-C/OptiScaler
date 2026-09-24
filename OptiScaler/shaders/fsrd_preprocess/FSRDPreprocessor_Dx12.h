@@ -80,8 +80,9 @@ class FSRDPreprocessor_Dx12
         DebugSignalDelta = 22 << 17 | Debug,    // |demodSpecular - demodDiffuse|; blue everywhere = degenerate split
         DebugRoughnessProbe = 23 << 17 | Debug, // White where roughness matches RoughnessProbe
 
-        DebugEmissiveCheck = 24 << 17 | Debug, // Grey = albedo sum / 6, magenta = classified emissive
-        DebugHitGateParts = 25 << 17 | Debug,  // RGB = roughness / emissive / bias terms of the gate
+        DebugEmissiveCheck = 24 << 17 | Debug,     // Grey = albedo sum / 6, magenta = classified emissive
+        DebugHitGateParts = 25 << 17 | Debug,      // RGB = roughness / emissive / bias terms of the gate
+        DebugMotionConsistency = 26 << 17 | Debug, // game motion vectors vs camera matrices (24 Sep)
     };
 
     enum class CompFlags : uint32_t
@@ -136,6 +137,7 @@ class FSRDPreprocessor_Dx12
         DirectX::XMFLOAT4X4 InvViewMatrix;  // DLSSD WorldToView^1 - Camera matrix
         DirectX::XMFLOAT4X4 InvProjMatrix;  // DLSSD ViewToClip^-1 - Projection
         DirectX::XMFLOAT4X4 PrevViewMatrix; // DLSSD WorldToView from last frame
+        DirectX::XMFLOAT4X4 ProjMatrix;     // DLSSD ViewToClip, motion consistency check only (24 Sep)
 
         DirectX::XMFLOAT4 RenderSize; // XY: Resolution of inputs - ZW: 1.0 / Resolution
 

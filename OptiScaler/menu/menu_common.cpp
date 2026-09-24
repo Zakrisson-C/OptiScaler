@@ -2555,6 +2555,10 @@ const char* FsrdLegendText(const char* view)
                          "closes it." },
         { "HitGateParts", "White = hit distance passes. Cyan = closed by roughness, magenta = closed by the "
                           "emissive override, yellow = closed by the bias mask, black = by more than one." },
+        { "MotionConsistency", "Game motion vectors minus the motion the camera matrices predict for a static "
+                               "point. Black = agree; brightness = disagreement, full at 4 px; hue = direction. "
+                               "Moving cars and people light up legitimately; static scenery should stay black "
+                               "while you move and turn." },
         { "EmissiveCheck", "Grey = raw spec + diffuse albedo summed over RGB, / 6 (physical materials stay under "
                            "~0.5). Magenta = classified emissive (sum >= 5.4), whether or not the override is "
                            "switched off." },
@@ -2731,7 +2735,9 @@ std::vector<FsrdRow> FsrdBuildProbeRows(const FSRD::ProbeReadout& probe, bool sh
     }
 
     Section("Geometry");
-    Row("Linear depth", V(S(fp::DepthMotion), 0), "log-normalised " + V(S(fp::DepthMotion), 1));
+    Row("Linear depth", V(S(fp::DepthMotion), 0));
+    Row("Motion vs camera model", V(S(fp::DepthMotion), 1),
+        "px; game motion vectors vs the matrices' prediction for a static point");
     Row("Motion vector (input units)",
         FsrdNum(S(fp::DepthMotion).emaMean[2]) + ", " + FsrdNum(S(fp::DepthMotion).emaMean[3]));
     Row("Depth delta", V(S(fp::Geometry), 0));
@@ -2907,6 +2913,8 @@ std::string FsrdBuildReport(Config* config, State& state, const FSRD::ProbeReado
                      frame.hwDepth ? ", hardware" : ", linear", frame.fovVerticalDeg, FsrdNum(frame.jitterPx[0]),
                      FsrdNum(frame.jitterPx[1]), FsrdNum(frame.mvScale[0]), FsrdNum(frame.mvScale[1]),
                      frame.roughnessPacked ? "packed in normals.a" : "separate", frame.reset ? "set" : "clear"));
+    Line(std::format("Camera position ({:.2f}, {:.2f}, {:.2f}); last frame moved {:.3f}, turned {:.3f} deg",
+                     frame.camPos[0], frame.camPos[1], frame.camPos[2], frame.camMove, frame.camTurnDeg));
     Line("Game inputs:");
 
     for (const auto& input : inputs)
@@ -3212,6 +3220,11 @@ void MenuCommon::RenderFsrdDebugTools(RenderMenuContext& ctx)
                     FsrdNum(frame.jitterPx[1]).c_str(), FsrdNum(frame.mvScale[0]).c_str(),
                     FsrdNum(frame.mvScale[1]).c_str());
         ImGui::Text("Camera position (%.2f, %.2f, %.2f)", frame.camPos[0], frame.camPos[1], frame.camPos[2]);
+        ImGui::Text("Last frame: moved %.3f, turned %.3f deg", frame.camMove, frame.camTurnDeg);
+        ShowHelpMarker("From the game's view matrices. Walking should show a steady\n"
+                       "few centimetres per frame; if it stays at 0 while you move,\n"
+                       "the matrices are camera-relative and the camera position\n"
+                       "delta sent to the denoiser is wrong.");
         ImGui::Text("Roughness %s, reset flag %s", frame.roughnessPacked ? "packed in normals.a" : "separate texture",
                     frame.reset ? "set" : "clear");
         ImGui::Text("Denoiser %s, upscaler %s this frame", frame.denoiseBypassed ? "bypassed" : "running",

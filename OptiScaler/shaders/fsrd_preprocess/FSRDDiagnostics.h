@@ -49,7 +49,7 @@ enum Slot : uint32_t
     DemodSpec,     // signal 1 rgb (demodulated specular), specular split fraction
     DemodDiff,     // signal 2 rgb (demodulated diffuse), signal 2 alpha
     SkipOut,       // skip signal rgb as written, alpha as written
-    DepthMotion,   // linear depth, compressed depth, motion x, motion y (input units)
+    DepthMotion,   // linear depth, camera-model motion error (px), motion x, motion y (input units)
     Geometry,      // depth delta, input normal length, N.V, residual luminance
 };
 static_assert(Geometry + 1 == kSlotCount, "Probe slot layout out of sync");
@@ -133,6 +133,8 @@ struct FrameInfo
     float projB = 0.0f;
     float projW = 0.0f;
     float camPos[3] = {};
+    float camMove = 0.0f;    // world units moved over the last frame (length of cameraPositionDelta)
+    float camTurnDeg = 0.0f; // angle between the previous and current forward axes, degrees
     float jitterPx[2] = {};
     float mvScale[2] = {};
 
