@@ -118,6 +118,15 @@ class FSRDFeatureDx12 : public FFXFeatureDx12
     // upscaler runs, and 1.2 resets its history on every frame index jump.
     uint32_t _denoiserFrameIndex = 0;
 
+    // Frame index continuity counters for the diagnostics panel (24 Sep), see FSRD::FrameInfo.
+    bool _dispatchedOnContext = false; // cleared when a context is created
+    uint32_t _lastDispatchedIndex = 0;
+    uint64_t _dispatchCount = 0;
+    uint64_t _indexGapCount = 0;
+    uint32_t _lastGapFrames = 0;
+    uint64_t _contextStartCount = 0;
+    uint64_t _gameResetCount = 0;
+
     // Matrices
     DirectX::XMMATRIX _invViewMatrix;  // Camera rotation and translation
     DirectX::XMMATRIX _viewMatrix;     // World to camera space

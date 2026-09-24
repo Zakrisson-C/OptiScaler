@@ -2916,6 +2916,10 @@ std::string FsrdBuildReport(Config* config, State& state, const FSRD::ProbeReado
                                        : std::string("missing")));
     }
 
+    Line(
+        std::format("Frame index (shim side): {} dispatches, {} gaps (last: {} frames skipped), {} new-context starts, "
+                    "{} game resets",
+                    frame.dispatches, frame.indexGaps, frame.lastGapFrames, frame.contextStarts, frame.gameResets));
     Line(std::format("Runtime messages: {} distinct, {} total", messages.size(), messagesTotal));
 
     for (const auto& message : messages)
@@ -3212,6 +3216,14 @@ void MenuCommon::RenderFsrdDebugTools(RenderMenuContext& ctx)
                     frame.reset ? "set" : "clear");
         ImGui::Text("Denoiser %s, upscaler %s this frame", frame.denoiseBypassed ? "bypassed" : "running",
                     frame.upscaleBypassed ? "bypassed" : "running");
+        ImGui::Text("Frame index: %llu dispatches, %llu gaps (last %u frames), %llu new-context starts, %llu resets",
+                    (unsigned long long) frame.dispatches, (unsigned long long) frame.indexGaps, frame.lastGapFrames,
+                    (unsigned long long) frame.contextStarts, (unsigned long long) frame.gameResets);
+        ShowHelpMarker("Compare with 'Frame index jump detected' under Runtime messages.\n"
+                       "Gaps are frames on which the denoiser didn't run (bypass\n"
+                       "debug views, a failed conversion); a new context also starts\n"
+                       "without history. Warnings beyond gaps + starts come from\n"
+                       "somewhere the shim can't see.");
         ImGui::TreePop();
     }
 

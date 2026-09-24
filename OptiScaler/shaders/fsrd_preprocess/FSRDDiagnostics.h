@@ -150,6 +150,14 @@ struct FrameInfo
     bool declaredStatesFixed = false; // A/B finding 5 in force this frame
     bool albedo16 = false;            // albedo textures created as RGBA16F (A/B finding 3)
     bool messageCallback = false;     // runtime message callback accepted by the denoiser DLL
+
+    // Frame index continuity as the shim sees it (24 Sep). 1.2 warns "Frame index jump detected" when a
+    // dispatch's index isn't the previous one + 1; these count the cases the shim itself causes.
+    uint64_t dispatches = 0;
+    uint64_t indexGaps = 0;     // index moved by more than 1: frames on which the denoiser didn't run
+    uint32_t lastGapFrames = 0; // frames skipped before the most recent gap
+    uint64_t contextStarts = 0; // first dispatch on a newly created context
+    uint64_t gameResets = 0;    // dispatches carrying the game's reset flag
 };
 
 struct RuntimeMessage

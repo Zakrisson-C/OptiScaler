@@ -523,6 +523,8 @@ bool FSRDFeatureDx12::CreateDenoiserContext()
             LOG_ERROR("_denoiserCtx error: {0}", FfxApiProxy::ReturnCodeToString(ret));
             return false;
         }
+
+        _dispatchedOnContext = false;
     }
 
     // Runtime messages (24 Sep): route the denoiser's own errors and warnings, and what validation
@@ -1246,6 +1248,28 @@ bool FSRDFeatureDx12::DispatchDenoiser(ID3D12GraphicsCommandList* InCommandList,
                      FfxApiProxy::ReturnCodeToString(_applyCodes[i]));
     }
 
+    // Frame index continuity (24 Sep). Classifies each dispatch the way 1.2's "Frame index jump" check
+    // would see it, so the panel can show whether the shim accounts for every warning.
+    _dispatchCount++;
+
+    if (dispatchDesc.flags & FFX_DENOISER_DISPATCH_RESET)
+        _gameResetCount++;
+
+    if (!_dispatchedOnContext)
+    {
+        _contextStartCount++;
+        _dispatchedOnContext = true;
+    }
+    else if (dispatchDesc.frameIndex != _lastDispatchedIndex + 1)
+    {
+        _indexGapCount++;
+        _lastGapFrames = dispatchDesc.frameIndex - _lastDispatchedIndex - 1;
+        LOG_INFO("FSR-RR frame index gap: {} frame(s) without a denoiser dispatch before index {}", _lastGapFrames,
+                 dispatchDesc.frameIndex);
+    }
+
+    _lastDispatchedIndex = dispatchDesc.frameIndex;
+
     LOG_DEBUG("Dispatching FSR-RR...");
     const ffxReturnCode_t result = FfxApiProxy::D3D12_Dispatch(&_pDenoiserCtx, &dispatchDesc.header);
     _lastDispatchCode = result;
@@ -1348,6 +1372,11 @@ void FSRDFeatureDx12::PublishDiagnostics(const NVSDK_NGX_Parameter& inParams, bo
     frame.declaredStatesFixed = _lastDeclaredStates;
     frame.albedo16 = FSRDConvShader != nullptr && FSRDConvShader->IsAlbedo16();
     frame.messageCallback = _messageCallbackOk;
+    frame.dispatches = _dispatchCount;
+    frame.indexGaps = _indexGapCount;
+    frame.lastGapFrames = _lastGapFrames;
+    frame.contextStarts = _contextStartCount;
+    frame.gameResets = _gameResetCount;
 
     // Every DLSS-RR input the game hands over, consumed or not, with its format
     std::vector<FSRD::InputInfo> inputs;
