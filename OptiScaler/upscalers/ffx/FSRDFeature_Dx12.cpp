@@ -768,6 +768,11 @@ bool FSRDFeatureDx12::EvaluateInternal(ID3D12GraphicsCommandList* InCommandList,
             };
         }
 
+        // A/B (24 Sep): the transplant's frame index, which advanced twice per frame and made 1.2 reset its
+        // history on every dispatch. For before/after comparison only.
+        if (cfg.FfxDenoiserAbActive.value_or_default() && cfg.FfxDenoiserAbFrameIndexDoubled.value_or_default())
+            denoiserDesc.frameIndex = (uint32_t) _frameCount;
+
         isDenoiserReady = DispatchDenoiser(InCommandList, denoiserDesc);
 
         if (!isDenoiserReady)

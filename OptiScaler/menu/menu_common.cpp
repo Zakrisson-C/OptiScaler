@@ -2793,6 +2793,12 @@ std::vector<FsrdAbSwitch> FsrdAbSwitches(Config* config)
           "Audit finding 10. Uses the SDK's own values for the six tuning\n"
           "sliders at the top instead of forcing the sliders' values.\n"
           "Diagnostics > Denoiser tuning lists both." },
+        { "Old frame index (resets every frame)", &config->FfxDenoiserAbFrameIndexDoubled,
+          "The transplant's bug, kept for comparison. The frame index handed to\n"
+          "the denoiser advanced by 2 per frame (the upscaler's evaluate counts a\n"
+          "frame too), so 1.2 saw a jump every frame and threw its temporal\n"
+          "history away: 'Frame index jump detected. Resetting...' in Runtime\n"
+          "messages. Ticking this brings that back." },
     };
 }
 
