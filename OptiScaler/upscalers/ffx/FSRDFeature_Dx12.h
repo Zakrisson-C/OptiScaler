@@ -12,8 +12,8 @@
  * to FFXFeatureDx12 (public FFXFeature, public IFeature_Dx12 - split inheritance). Name() is
  * dropped: IFeature::Name() is non-virtual now and derives from GetUpscalerType(). (23 Sep
  * correction: that makes GetUpscalerType() the hook, not a dead end - FFXFeatureDx12 had it
- * `final`, which is now relaxed so this class can report Upscaler::FSRD, see below.) Evaluate() is renamed to EvaluateInternal():
- * IFeature_Dx12::Evaluate() is now a fixed, non-overridable template-method entry point that runs
+ * `final`, which is now relaxed so this class can report Upscaler::FSRD, see below.) Evaluate() is renamed to
+ * EvaluateInternal(): IFeature_Dx12::Evaluate() is now a fixed, non-overridable template-method entry point that runs
  * the shared RCAS/OutputScaling/Magnifier post-process pipeline and GPU timing around whatever
  * EvaluateInternal() does - see FSRDFeature_Dx12.cpp for how the old PrepareUpscalerInput /
  * DispatchUpscaler / PostProcess / SetConfigurableBarriers calls collapse into one call to
@@ -44,7 +44,6 @@ class FSRDFeatureDx12 : public FFXFeatureDx12
     bool EvaluateInternal(ID3D12GraphicsCommandList* InCommandList, NVSDK_NGX_Parameter* InParameters) override;
 
   private:
-
     union DenoiserConfiguration
     {
         static constexpr uint32_t kCount = FFX_API_CONFIGURE_DENOISER_KEY_DISOCCLUSION_THRESHOLD;
@@ -62,9 +61,9 @@ class FSRDFeatureDx12 : public FFXFeatureDx12
 
         float AsArray[kCount];
 
-        static int GetKeyIndex(FfxApiConfigureDenoiserKey key) 
+        static int GetKeyIndex(FfxApiConfigureDenoiserKey key)
         {
-            return std::clamp((int) key - 1, 0, (int)DenoiserConfiguration::kCount - 1);
+            return std::clamp((int) key - 1, 0, (int) DenoiserConfiguration::kCount - 1);
         }
 
         static FfxApiConfigureDenoiserKey GetIndexKey(int index)
@@ -99,11 +98,11 @@ class FSRDFeatureDx12 : public FFXFeatureDx12
     DirectX::XMFLOAT3 _lastCamPos; // Last world space camera position
 
     // Matrices
-    DirectX::XMMATRIX _invViewMatrix;   // Camera rotation and translation
-    DirectX::XMMATRIX _viewMatrix;      // World to camera space
-    DirectX::XMMATRIX _prevViewMatrix;  // Last world to camera space
-    DirectX::XMMATRIX _projMatrix;      // Perspective projection matrix
-    bool _isRightHanded;                // True if the camera matrix is right handed
+    DirectX::XMMATRIX _invViewMatrix;  // Camera rotation and translation
+    DirectX::XMMATRIX _viewMatrix;     // World to camera space
+    DirectX::XMMATRIX _prevViewMatrix; // Last world to camera space
+    DirectX::XMMATRIX _projMatrix;     // Perspective projection matrix
+    bool _isRightHanded;               // True if the camera matrix is right handed
 
     std::unique_ptr<FSRDPreprocessor_Dx12> FSRDConvShader;
 

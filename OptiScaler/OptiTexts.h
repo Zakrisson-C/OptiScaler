@@ -10,4 +10,4 @@ using CString = const char[];
 
 // User friendly name for FSR-RR backend
 inline constexpr CString FSR_RR_Name = "FSR Ray Regeneration";
-}
+} // namespace OptiTexts

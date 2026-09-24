@@ -2578,9 +2578,9 @@ void MenuCommon::RenderActiveUpscalerSettings(RenderMenuContext& ctx)
             {
                 ImGui::Spacing();
                 ImGui::TextColored(toneMapColor(ImVec4(1.f, 0.8f, 0.f, 1.f)),
-                                    "[Warning] FSR-RR version mismatch | Installed: %d.%d.%d | Expected: %d.%d.%d",
-                                    rrVer.major, rrVer.minor, rrVer.patch, rrTarget.major, rrTarget.minor,
-                                    rrTarget.patch);
+                                   "[Warning] FSR-RR version mismatch | Installed: %d.%d.%d | Expected: %d.%d.%d",
+                                   rrVer.major, rrVer.minor, rrVer.patch, rrTarget.major, rrTarget.minor,
+                                   rrTarget.patch);
             }
         }
     }
@@ -2692,9 +2692,8 @@ void MenuCommon::RenderActiveUpscalerSettings(RenderMenuContext& ctx)
         // Transplant, 22 Sep (plan §7): FSR-RR wraps an FFX-API FSR upscaler, so it belongs in this
         // section too -- excluded from usesDlssd (FSRD != DLSSD) but its own backend code isn't FFX/
         // FFX_on12, so it needs listing explicitly alongside them.
-        if (!usesDlssd &&
-            (currentBackend == Upscaler::FFX || currentBackend == Upscaler::FFX_on12 ||
-             currentBackend == Upscaler::FSRD))
+        if (!usesDlssd && (currentBackend == Upscaler::FFX || currentBackend == Upscaler::FFX_on12 ||
+                           currentBackend == Upscaler::FSRD))
         {
             ImGui::SeparatorText("FFX Settings");
 
@@ -3024,10 +3023,9 @@ void MenuCommon::RenderActiveUpscalerSettings(RenderMenuContext& ctx)
                     ImGui::SliderFloat("Cross Bilateral Normal Strength", &v, 0, 1))
                     config->FfxDenoiserCrossBlNormStr = v;
                 if (ImGui::IsItemHovered())
-                    ImGui::SetTooltip(
-                        "Controls how strongly the denoiser preserves edges based on surface angles.\n"
-                        "Higher: Keeps edges sharper and prevents blurring across surface boundaries.\n"
-                        "Too high: May introduce noise or artifacts on complex surfaces.");
+                    ImGui::SetTooltip("Controls how strongly the denoiser preserves edges based on surface angles.\n"
+                                      "Higher: Keeps edges sharper and prevents blurring across surface boundaries.\n"
+                                      "Too high: May introduce noise or artifacts on complex surfaces.");
 
                 if (float v = config->FfxDenoiserStabilityBias.value_or_default();
                     ImGui::SliderFloat("Temporal Stability Bias", &v, 0.1f, 0.9f))
@@ -3043,8 +3041,8 @@ void MenuCommon::RenderActiveUpscalerSettings(RenderMenuContext& ctx)
                     config->FfxDenoiserMaxRadiance = v;
                 if (ImGui::IsItemHovered())
                     ImGui::SetTooltip("Lower: More aggressive firefly removal, but may dim bright highlights.\n"
-                                       "Higher: Preserves bright lights better, but may allow fireflies and "
-                                       "noise through.");
+                                      "Higher: Preserves bright lights better, but may allow fireflies and "
+                                      "noise through.");
 
                 if (float v = config->FfxDenoiserRadianceClip.value_or_default();
                     ImGui::SliderFloat("Radiance Clip Deviation", &v, 1, 500))
@@ -3061,12 +3059,11 @@ void MenuCommon::RenderActiveUpscalerSettings(RenderMenuContext& ctx)
                     ImGui::SliderFloat("Gaussian Kernel Relaxation", &v, 0, 1))
                     config->FfxDenoiserGaussKernRelax = v;
                 if (ImGui::IsItemHovered())
-                    ImGui::SetTooltip(
-                        "Controls how the smoothing filter adapts to surface details.\n"
-                        "Higher: Filter stretches more to follow surface geometry, reducing rippling and "
-                        "banding on smooth surfaces.\n"
-                        "Lower: Slightly sharper with weaker smoothing on large surfaces, may increase "
-                        "banding and rippling.");
+                    ImGui::SetTooltip("Controls how the smoothing filter adapts to surface details.\n"
+                                      "Higher: Filter stretches more to follow surface geometry, reducing rippling and "
+                                      "banding on smooth surfaces.\n"
+                                      "Lower: Slightly sharper with weaker smoothing on large surfaces, may increase "
+                                      "banding and rippling.");
 
                 if (ImGui::Button("Reset"))
                 {
@@ -3106,7 +3103,7 @@ void MenuCommon::RenderActiveUpscalerSettings(RenderMenuContext& ctx)
                             { return std::tolower(a) == std::tolower(b); };
 
                             return std::search(haystack.begin(), haystack.end(), needle.begin(), needle.end(),
-                                                charPredicate) != haystack.end();
+                                               charPredicate) != haystack.end();
                         };
 
                         // Debug view list - these are getting slightly out of hand
@@ -3241,8 +3238,7 @@ void MenuCommon::RenderActiveUpscalerSettings(RenderMenuContext& ctx)
                                "Judge on puddles and clean car paint.");
 
                 if (float v = config->FfxDenoiserHitDistScale.value_or_default();
-                    ImGui::SliderFloat("Hit Distance Scale", &v, 0.01f, 100.0f, "%.3f",
-                                        ImGuiSliderFlags_Logarithmic))
+                    ImGui::SliderFloat("Hit Distance Scale", &v, 0.01f, 100.0f, "%.3f", ImGuiSliderFlags_Logarithmic))
                     config->FfxDenoiserHitDistScale = v;
                 ShowHelpMarker("Scales specular ray length. 1.0 = unchanged.\n"
                                "Confirm units with Virtual Hit Pos first.");

@@ -171,7 +171,7 @@ Upscaler CodeToUpscaler(const std::string& code)
         { "ffx", Upscaler::FFX },     { "ffx_12", Upscaler::FFX_on12 },
         { "dlss", Upscaler::DLSS },   { "dlssd", Upscaler::DLSSD },
         { "fsr31", Upscaler::FSR31 }, { "fsr31_12", Upscaler::FFX_on12 }, // for compat reasons
-        { "fsr-rr", Upscaler::FSRD }, // Transplant, 22 Sep (plan §7/Phase 4c)
+        { "fsr-rr", Upscaler::FSRD },                                     // Transplant, 22 Sep (plan §7/Phase 4c)
     };
 
     auto it = mapping.find(code);

@@ -21,73 +21,72 @@ struct ffxDispatchDescDenoiser;
 class FSRDPreprocessor_Dx12
 {
   public:
-
     enum class ConvFlags : uint32_t
     {
         None = 0,
 
-        NonGammaAlbedo =        1 << 0, // If set, FFX_DENOISER_DISPATCH_NON_GAMMA_ALBEDO should ALSO be set
-        IsDepthLinear =         1 << 1, // Interprets input depth as already linearized for view space calculations
-        IsRoughnessPacked =     1 << 2, // Roughness = InNormals.A - NVSDK_NGX_DLSS_Roughness_Mode_Packed (Init param)
+        NonGammaAlbedo = 1 << 0,    // If set, FFX_DENOISER_DISPATCH_NON_GAMMA_ALBEDO should ALSO be set
+        IsDepthLinear = 1 << 1,     // Interprets input depth as already linearized for view space calculations
+        IsRoughnessPacked = 1 << 2, // Roughness = InNormals.A - NVSDK_NGX_DLSS_Roughness_Mode_Packed (Init param)
         // Mode2Signal (1 << 3) removed (transplant, 22 Sep): denoiser 1.2 only has the split
         // diffuse/specular signal shape, so the packing shader always takes what used to be the
         // Mode 2 path now. Bit 3 deliberately left unused rather than renumbering HasBiasMask.
-        HasBiasMask =           1 << 4, // InBiasMask holds a real DLSS bias-current-color mask
+        HasBiasMask = 1 << 4, // InBiasMask holds a real DLSS bias-current-color mask
 
-        Debug =                 1 << 16, // Denoiser and upscaler bypassed for debug out if this is set
-        DebugModeMask =         0xFF << 16,
+        Debug = 1 << 16, // Denoiser and upscaler bypassed for debug out if this is set
+        DebugModeMask = 0xFF << 16,
 
-        DebugOutRadiance =      Debug, // Default debug vis
+        DebugOutRadiance = Debug, // Default debug vis
 
-        DebugInSpecHitDist =    1 << 17 | Debug,
-        DebugInMotion =         2 << 17 | Debug,
-        DebugInNormals =        3 << 17 | Debug,
-        DebugInRoughness =      4 << 17 | Debug,
-        DebugInDiffAlbedo =     5 << 17 | Debug,
-        DebugInSpecAlbedo =     6 << 17 | Debug,
+        DebugInSpecHitDist = 1 << 17 | Debug,
+        DebugInMotion = 2 << 17 | Debug,
+        DebugInNormals = 3 << 17 | Debug,
+        DebugInRoughness = 4 << 17 | Debug,
+        DebugInDiffAlbedo = 5 << 17 | Debug,
+        DebugInSpecAlbedo = 6 << 17 | Debug,
 
         // DebugOutFusedAlbedo (7 << 17 | Debug) removed (transplant, 22 Sep): Mode-1-only, would
         // read permanent black with fusedAlbedo never assigned outside the removed Mode 1 branch.
-        DebugOutLinearDepth =   8 << 17 | Debug,
-        DebugOutMotion =        9 << 17 | Debug,
-        DebugOutNormals =       10 << 17 | Debug,
-        DebugOutSpecAlbedo =    11 << 17 | Debug,
-        DebugOutDiffAlbedo =    12 << 17 | Debug,
+        DebugOutLinearDepth = 8 << 17 | Debug,
+        DebugOutMotion = 9 << 17 | Debug,
+        DebugOutNormals = 10 << 17 | Debug,
+        DebugOutSpecAlbedo = 11 << 17 | Debug,
+        DebugOutDiffAlbedo = 12 << 17 | Debug,
 
-        DebugOutDepthDelta =    13 << 17 | Debug,
-        DebugNormDepth =        14 << 17 | Debug,
+        DebugOutDepthDelta = 13 << 17 | Debug,
+        DebugNormDepth = 14 << 17 | Debug,
 
-        DebugAlbedoError =      15 << 17 | Debug,
+        DebugAlbedoError = 15 << 17 | Debug,
 
-        DebugFloorVariance =    16 << 17 | Debug,
-        DebugFloorColor =       17 << 17 | Debug,
+        DebugFloorVariance = 16 << 17 | Debug,
+        DebugFloorColor = 17 << 17 | Debug,
 
-        DebugInBiasMask =       18 << 17 | Debug, // Bias mask as applied, after strength scaling
-        DebugDemodGain =        19 << 17 | Debug, // 1 / albedo used as the demodulation divisor
+        DebugInBiasMask = 18 << 17 | Debug, // Bias mask as applied, after strength scaling
+        DebugDemodGain = 19 << 17 | Debug,  // 1 / albedo used as the demodulation divisor
 
-        DebugHitDistGate =      20 << 17 | Debug, // canUseHitDist ramp, separate from the buffer it scales
+        DebugHitDistGate = 20 << 17 | Debug,      // canUseHitDist ramp, separate from the buffer it scales
         DebugDenoiserFraction = 21 << 17 | Debug, // Share of the pixel routed to the denoiser vs the skip signal
 
-        DebugSignalDelta =      22 << 17 | Debug, // |demodSpecular - demodDiffuse|; blue everywhere = degenerate split
-        DebugRoughnessProbe =   23 << 17 | Debug, // White where roughness matches RoughnessProbe
+        DebugSignalDelta = 22 << 17 | Debug,    // |demodSpecular - demodDiffuse|; blue everywhere = degenerate split
+        DebugRoughnessProbe = 23 << 17 | Debug, // White where roughness matches RoughnessProbe
     };
 
     enum class CompFlags : uint32_t
     {
-        None =                  0,
-        RawSourceBlit =         1 << 0, // Bypass composition and write unmodified input
-        ScaleSrc =              1 << 1, // Enable bilinear scaling to output
+        None = 0,
+        RawSourceBlit = 1 << 0, // Bypass composition and write unmodified input
+        ScaleSrc = 1 << 1,      // Enable bilinear scaling to output
         // Mode2Signal (1 << 2) removed (transplant, 22 Sep): the composition shader always blends
         // both split signals now - see FSRDOutputComp.hlsl. Bit 2 deliberately left unused.
 
-        Debug =                 1 << 16,
-        DebugModeMask =         0xFF << 16,
+        Debug = 1 << 16,
+        DebugModeMask = 0xFF << 16,
 
-        DebugCorrelation =      1 << 17 | Debug,
-        DebugSkipSignal =       2 << 17 | Debug,
-        DebugDenoiserOutput =   3 << 17 | Debug,
-        DebugSignal1 =          4 << 17 | Debug,
-        DebugSignal2 =          5 << 17 | Debug,
+        DebugCorrelation = 1 << 17 | Debug,
+        DebugSkipSignal = 2 << 17 | Debug,
+        DebugDenoiserOutput = 3 << 17 | Debug,
+        DebugSignal1 = 4 << 17 | Debug,
+        DebugSignal2 = 5 << 17 | Debug,
     };
 
     /**
@@ -98,15 +97,16 @@ class FSRDPreprocessor_Dx12
     {
         struct
         {
-            ID3D12Resource* InColor; // RGB - NVSDK_NGX_Parameter_Color - HDR or SDR
-            ID3D12Resource* InDepth; // R - NVSDK_NGX_Parameter_Depth - 24/32bits
+            ID3D12Resource* InColor;         // RGB - NVSDK_NGX_Parameter_Color - HDR or SDR
+            ID3D12Resource* InDepth;         // R - NVSDK_NGX_Parameter_Depth - 24/32bits
             ID3D12Resource* InMotionVectors; // RG - NVSDK_NGX_Parameter_MotionVectors - RG16/RG32
-            ID3D12Resource* InNormals; // RGB: Normals, A: Roughness (Optional) - NVSDK_NGX_Parameter_GBuffer_Normals - RGB16_FLOAT/RG32_FLOAT
-            ID3D12Resource* InRoughness; // R - May be packed in normals. NVSDK_NGX_Parameter_GBuffer_Roughness
+            ID3D12Resource* InNormals; // RGB: Normals, A: Roughness (Optional) - NVSDK_NGX_Parameter_GBuffer_Normals -
+                                       // RGB16_FLOAT/RG32_FLOAT
+            ID3D12Resource* InRoughness;   // R - May be packed in normals. NVSDK_NGX_Parameter_GBuffer_Roughness
             ID3D12Resource* InSpecHitDist; // R - NVSDK_NGX_Parameter_DLSSD_SpecularHitDistance - FP16/FP32
-            ID3D12Resource* InDiffAlbedo; // RGB - NVSDK_NGX_Parameter_GBuffer_DiffuseAlbedo - RGBA32
-            ID3D12Resource* InSpecAlbedo; // RGB - NVSDK_NGX_Parameter_GBuffer_SpecularAlbedo - RGBA32
-            ID3D12Resource* InBiasMask; // R8 - NVSDK_NGX_Parameter_DLSS_Input_Bias_Current_Color_Mask
+            ID3D12Resource* InDiffAlbedo;  // RGB - NVSDK_NGX_Parameter_GBuffer_DiffuseAlbedo - RGBA32
+            ID3D12Resource* InSpecAlbedo;  // RGB - NVSDK_NGX_Parameter_GBuffer_SpecularAlbedo - RGBA32
+            ID3D12Resource* InBiasMask;    // R8 - NVSDK_NGX_Parameter_DLSS_Input_Bias_Current_Color_Mask
         };
 
         ID3D12Resource* AsArray[9];
@@ -120,11 +120,11 @@ class FSRDPreprocessor_Dx12
     {
         InputResources Resources;
 
-        DirectX::XMFLOAT4X4 InvViewMatrix;     // DLSSD WorldToView^1 - Camera matrix
-        DirectX::XMFLOAT4X4 InvProjMatrix;     // DLSSD ViewToClip^-1 - Projection
-        DirectX::XMFLOAT4X4 PrevViewMatrix;    // DLSSD WorldToView from last frame
+        DirectX::XMFLOAT4X4 InvViewMatrix;  // DLSSD WorldToView^1 - Camera matrix
+        DirectX::XMFLOAT4X4 InvProjMatrix;  // DLSSD ViewToClip^-1 - Projection
+        DirectX::XMFLOAT4X4 PrevViewMatrix; // DLSSD WorldToView from last frame
 
-        DirectX::XMFLOAT4 RenderSize;    // XY: Resolution of inputs - ZW: 1.0 / Resolution
+        DirectX::XMFLOAT4 RenderSize; // XY: Resolution of inputs - ZW: 1.0 / Resolution
 
         float NearPlane; // Near < Far
         float FarPlane;  // Near < Far
@@ -183,7 +183,7 @@ class FSRDPreprocessor_Dx12
     struct CompositionDesc
     {
         DirectX::XMFLOAT4 DstTexSize; // XY = Tex Size - ZW = 1 / XY
-        float CorrelationBias; // Enhances the contribution of stable elements to the final image
+        float CorrelationBias;        // Enhances the contribution of stable elements to the final image
         uint32_t Flags;
 
         ID3D12Resource* InRawColor;
@@ -191,7 +191,6 @@ class FSRDPreprocessor_Dx12
     };
 
   public:
-
     FSRDPreprocessor_Dx12(std::string_view name, ID3D12Device* pDev);
 
     ~FSRDPreprocessor_Dx12();
@@ -235,7 +234,7 @@ class FSRDPreprocessor_Dx12
                    ffxDispatchDescDenoiser& dispatchDesc) const;
 
     /**
-     * @brief Composes the denoised radiance from FSR-RR with the skip signal previously generated 
+     * @brief Composes the denoised radiance from FSR-RR with the skip signal previously generated
      * by the converter, and writes the result to the given destination texture.
      */
     bool DispatchComposition(ID3D12GraphicsCommandList* cmdList, const CompositionDesc& desc);
