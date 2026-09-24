@@ -4,7 +4,7 @@
 #define MainRS \
     "RootFlags(0), " \
     "CBV(b0), " \
-    "DescriptorTable(SRV(t0, numDescriptors = 10), visibility = SHADER_VISIBILITY_ALL), " \
+    "DescriptorTable(SRV(t0, numDescriptors = 11), visibility = SHADER_VISIBILITY_ALL), " \
     "DescriptorTable(UAV(u0, numDescriptors = 8), visibility = SHADER_VISIBILITY_ALL), "
 
 // Dispatch config
@@ -31,6 +31,7 @@ static const uint2 s_ThreadGroupSize = uint2(THREAD_GROUP_SIZE_X, THREAD_GROUP_S
 #define FLAGS_AB_SOFTMIN_NONNEG         (1 << 9)  // Clamp the soft-min floor at zero (finding 1)
 #define FLAGS_AB_SKIP_ALPHA_FINAL       (1 << 10) // SkipSignal alpha from the final floor (finding 2)
 #define FLAGS_AB_SKIPPED_INACTIVE       (1 << 11) // Skipped pixels sent as inactive, alpha -1 (finding 6)
+#define FLAGS_AB_OBJECT_DEPTH_DELTA     (1 << 12) // Depth delta from last frame's depth on self-moving pixels
 
 // Debug Flags
 #define FLAGS_DEBUG                     (1 << 16)
@@ -87,6 +88,10 @@ Texture2D<half3> InSpecAlbedo : register(t7); // RGB - NVSDK_NGX_Parameter_GBuff
 Texture2D<half> InBiasMask : register(t8);
 
 Texture2D<half4> InFloorColor : register(t9);
+
+// Last frame's linear depth, for the object-motion depth delta (24 Sep). Read only with
+// FLAGS_AB_OBJECT_DEPTH_DELTA.
+Texture2D<float> InPrevLinearDepth : register(t10);
 
 // FSR-RR - ffxDispatchDescDenoiserIndirectSpecular / ffxDispatchDescDenoiserIndirectDiffuse
 // (transplant, 22 Sep: Mode 1's combined-signal shape removed, no successor in denoiser 1.2)
@@ -392,20 +397,43 @@ void CSMain(uint3 groupID : SV_GroupID, uint3 gtID : SV_GroupThreadID)
 
     // FSR-RR requires Linear Depth Delta in Blue channel
     const float2 motionIn = InMotionVectors[px].rg; // RG: Pixel Movement
-    const float depthDelta = (prevViewSpacePos.z - viewSpacePos.z);
-    const float3 motionOut = float3(motionIn, depthDelta);
-    OutMotion[px] = half4(motionOut, 0.0f);
 
     // Camera-model motion (24 Sep): where this pixel lands in the previous frame according to the
     // matrices alone (previous view, current projection), against the game's motion vectors. For
     // static geometry the two agree to a fraction of a pixel if the matrices describe the game's
-    // camera. The depth delta above and the denoiser's own reprojection of reflections (camera
+    // camera. The depth delta below and the denoiser's own reprojection of reflections (camera
     // matrices + cameraPositionDelta + hit distance) rest on the same camera model, so a mismatch
-    // here on static scenery is a mismatch there. Only feeds the probe and the debug view.
+    // here on static scenery is a mismatch there. Feeds the probe, the debug view and the
+    // object-motion A/B below.
     const float4 prevClip = mul(ProjMatrix, float4(mul(PrevViewMatrix, float4(worldSpacePos, 1.0f)).xyz, 1.0f));
     const float2 pixelUV = (float2(px) + 0.5f) * DstTexSize.zw;
     const float2 cameraMotion = NDCToUV(prevClip.xy / prevClip.w) - pixelUV;
     const float2 motionErrorPx = (cameraMotion - motionIn) * DstTexSize.xy;
+
+    float depthDelta = (prevViewSpacePos.z - viewSpacePos.z);
+
+    // A/B (24 Sep): object-motion depth delta. The delta above treats every pixel as static
+    // geometry seen from a moving camera. For anything that moves by itself it is wrong by that
+    // object's own displacement - in a chase camera the driven car sits still on screen while this
+    // reports the camera's v*dt, and the denoiser's depth test then rejects the car's history.
+    // Where the game's motion disagrees with the camera model by more than ~1 px, take the delta
+    // from last frame's linear depth at the position the game's motion vector points to. Static
+    // pixels keep the camera-model delta, so background revealed behind a moving object still
+    // fails the depth test (no ghosting there); a self-moving pixel's own newly exposed side can
+    // pass it.
+    if (IsSet(FLAGS_AB_OBJECT_DEPTH_DELTA))
+    {
+        const float2 prevUV = pixelUV + motionIn;
+
+        if (all(prevUV >= 0.0f) && all(prevUV < 1.0f))
+        {
+            const float prevDepth = abs(InPrevLinearDepth[int2(prevUV * DstTexSize.xy)]);
+            const float selfMotion = smoothstep(0.75f, 1.5f, length(motionErrorPx));
+            depthDelta = lerp(depthDelta, prevDepth - viewSpacePos.z, selfMotion);
+        }
+    }
+    const float3 motionOut = float3(motionIn, depthDelta);
+    OutMotion[px] = half4(motionOut, 0.0f);
 
     PROBE_WRITE(PROBE_DEPTH_MOTION, float4(viewSpacePos.z, length(motionErrorPx), motionIn));
 

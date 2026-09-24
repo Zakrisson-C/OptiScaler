@@ -2799,6 +2799,14 @@ std::vector<FsrdAbSwitch> FsrdAbSwitches(Config* config)
           "Audit finding 10. Uses the SDK's own values for the six tuning\n"
           "sliders at the top instead of forcing the sliders' values.\n"
           "Diagnostics > Denoiser tuning lists both." },
+        { "Object-motion depth delta", &config->FfxDenoiserAbObjectDepthDelta,
+          "The depth change sent with the motion vectors assumes a static world.\n"
+          "For anything that moves by itself - the car you drive, traffic,\n"
+          "people - it is off by that object's own movement (0.33 m per frame at\n"
+          "72 km/h), and the denoiser's depth test throws its history away.\n"
+          "This takes it from last frame's depth instead, only where the game's\n"
+          "motion disagrees with the camera (MotionConsistency lit). Try with the\n"
+          "disocclusion threshold back near 0.05." },
         { "Old frame index (resets every frame)", &config->FfxDenoiserAbFrameIndexDoubled,
           "The transplant's bug, kept for comparison. The frame index handed to\n"
           "the denoiser advanced by 2 per frame (the upscaler's evaluate counts a\n"

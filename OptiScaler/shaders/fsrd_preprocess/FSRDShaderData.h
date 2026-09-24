@@ -202,7 +202,7 @@ union Input
         ID3D12Resource* InBiasMask;    // R8 - NVSDK_NGX_Parameter_DLSS_Input_Bias_Current_Color_Mask
 
         ID3D12Resource* InBlurColor;
-        ID3D12Resource* InEdgeGuide;
+        ID3D12Resource* InPrevLinearDepth; // t10, last frame's linear depth (24 Sep; was the unused InEdgeGuide)
     };
 
     // The number of D3D12 resources in the struct

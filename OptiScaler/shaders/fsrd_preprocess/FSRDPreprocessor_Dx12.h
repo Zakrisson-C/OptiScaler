@@ -35,13 +35,14 @@ class FSRDPreprocessor_Dx12
 
         // Troubleshooting (24 Sep). A clear bit reproduces the previous behaviour exactly. The Ab*
         // bits are A/B switches for the pipeline audit's findings (claude/fsrd-pipeline-audit.md).
-        Probe = 1 << 5,              // Write pixel probe records (see FSRDDiagnostics.h)
-        AbNoEmissive = 1 << 6,       // Never reinterpret a pixel as emissive
-        AbGateNoRoughness = 1 << 7,  // Hit distance gate ignores roughness (finding 7)
-        AbGateNoBias = 1 << 8,       // Hit distance gate ignores the bias mask
-        AbSoftMinNonNeg = 1 << 9,    // Clamp the soft-min floor at zero (finding 1)
-        AbSkipAlphaFinal = 1 << 10,  // SkipSignal alpha from the final floor (finding 2)
-        AbSkippedInactive = 1 << 11, // Skipped pixels sent as inactive, alpha -1 (finding 6)
+        Probe = 1 << 5,               // Write pixel probe records (see FSRDDiagnostics.h)
+        AbNoEmissive = 1 << 6,        // Never reinterpret a pixel as emissive
+        AbGateNoRoughness = 1 << 7,   // Hit distance gate ignores roughness (finding 7)
+        AbGateNoBias = 1 << 8,        // Hit distance gate ignores the bias mask
+        AbSoftMinNonNeg = 1 << 9,     // Clamp the soft-min floor at zero (finding 1)
+        AbSkipAlphaFinal = 1 << 10,   // SkipSignal alpha from the final floor (finding 2)
+        AbSkippedInactive = 1 << 11,  // Skipped pixels sent as inactive, alpha -1 (finding 6)
+        AbObjectDepthDelta = 1 << 12, // Depth delta from last frame's depth on self-moving pixels
 
         Debug = 1 << 16, // Denoiser and upscaler bypassed for debug out if this is set
         DebugModeMask = 0xFF << 16,

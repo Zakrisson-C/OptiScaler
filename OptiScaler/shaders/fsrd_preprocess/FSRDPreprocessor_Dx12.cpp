@@ -281,6 +281,7 @@ struct FSRDPreprocessor_Dx12::Impl
     // Internal storage
     Conversion::Output m_out;
     ComPtr<ID3D12Resource> m_LinearDepth;
+    ComPtr<ID3D12Resource> m_PrevLinearDepth; // copy of last frame's m_LinearDepth (24 Sep)
     ComPtr<ID3D12Resource> m_outputBuffer1;
     ComPtr<ID3D12Resource> m_outputBuffer2;
 
@@ -369,6 +370,7 @@ struct FSRDPreprocessor_Dx12::Impl
         outResources.SkipSignal = CreateTex(FSRDFormats::SkipSignal, L"FSR_Conv_SkipSignal");
 
         m_LinearDepth = CreateTex(FSRDFormats::LinearDepth, L"FSR_Conv_LinearDepth");
+        m_PrevLinearDepth = CreateTex(FSRDFormats::LinearDepth, L"FSR_Conv_PrevLinearDepth");
         m_outputBuffer1 = CreateTex(FSRDFormats::OutputBuffer1, L"FSR_Conv_OutputBuffer1");
         m_outputBuffer2 = CreateTex(FSRDFormats::OutputBuffer2, L"FSR_Conv_OutputBuffer2");
 
@@ -505,6 +507,7 @@ struct FSRDPreprocessor_Dx12::Impl
                                                 .ProjMatrix = desc.ProjMatrix };
 
         in.Resources.InBlurColor = m_smoothFloor;
+        in.Resources.InPrevLinearDepth = m_PrevLinearDepth.Get();
 
         // A null SRV reads as zero, so the shader is safe without this, but the flag keeps
         // the "no mask provided" case explicit and visible in the debug views.
@@ -546,6 +549,14 @@ struct FSRDPreprocessor_Dx12::Impl
 
         // DLSS-RR to FSR-RR conversion
         DispatchPackingShader(cmdList, desc);
+
+        // Keep this frame's linear depth for next frame's object-motion depth delta (24 Sep). Copied
+        // every frame, so switching the A/B on never reads stale depth. Both stay in SRV state.
+        AddBarrier(cmdList, m_LinearDepth.Get(), kSrvState, D3D12_RESOURCE_STATE_COPY_SOURCE);
+        AddBarrier(cmdList, m_PrevLinearDepth.Get(), kSrvState, D3D12_RESOURCE_STATE_COPY_DEST);
+        cmdList->CopyResource(m_PrevLinearDepth.Get(), m_LinearDepth.Get());
+        AddBarrier(cmdList, m_LinearDepth.Get(), D3D12_RESOURCE_STATE_COPY_SOURCE, kSrvState);
+        AddBarrier(cmdList, m_PrevLinearDepth.Get(), D3D12_RESOURCE_STATE_COPY_DEST, kSrvState);
 
         // The probe texture is back in SRV state after the dispatch
         RecordProbeTexCopy(cmdList);

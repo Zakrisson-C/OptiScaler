@@ -573,6 +573,8 @@ class Config
     CustomOptional<bool> FfxDenoiserAbAlbedo16 { false };
     CustomOptional<bool> FfxDenoiserAbSdkDefaults { false };
     CustomOptional<bool> FfxDenoiserAbFrameIndexDoubled { false };
+    // ObjectDepthDelta (24 Sep): depth delta from last frame's depth on pixels that move by themselves.
+    CustomOptional<bool> FfxDenoiserAbObjectDepthDelta { false };
 
     // Keys: flip FfxDenoiserAbActive, and toggle between no debug view and the last one used.
     CustomOptional<int> FfxDenoiserAbShortcutKey { UnboundKey };
