@@ -528,13 +528,14 @@ class Config
     // Target value for the roughness null-probe debug view.
     CustomOptional<float> FfxDenoiserRoughnessProbe { 0.1f };
 
-    // Pulls the floor off near-mirror surfaces. 0 = bit-identical.
-    CustomOptional<float> FfxDenoiserFloorSpecGuard { 0.0f };
+    // Pulls the floor off near-mirror surfaces. 0 = off (the old behaviour). Default 1 since 25 Sep,
+    // with the fade below: Chris's tuned values after the frame index and depth delta fixes.
+    CustomOptional<float> FfxDenoiserFloorSpecGuard { 1.0f };
 
     // Distance fade for the guard (24 Sep), in linear depth units (metres in Cyberpunk): full strength
     // nearer than start, none beyond end, so distant glass keeps its fog. End <= start = no fade.
-    CustomOptional<float> FfxDenoiserFloorSpecGuardFadeStart { 0.0f };
-    CustomOptional<float> FfxDenoiserFloorSpecGuardFadeEnd { 0.0f };
+    CustomOptional<float> FfxDenoiserFloorSpecGuardFadeStart { 15.0f };
+    CustomOptional<float> FfxDenoiserFloorSpecGuardFadeEnd { 500.0f };
 
     // Biases the Mode 2 split toward specular on smooth surfaces. 0 = bit-identical.
     // Contingent on the signal-delta view confirming the split is degenerate.
