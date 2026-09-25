@@ -1109,6 +1109,67 @@ ID3D12Resource* FSRDPreprocessor_Dx12::GetCompositionOutput() const { return m_i
 
 bool FSRDPreprocessor_Dx12::IsAlbedo16() const { return m_impl->m_albedo16; }
 
+uint64_t FSRDPreprocessor_Dx12::GetGpuMemoryBytes() const
+{
+    if (!m_impl)
+        return 0;
+
+    const Impl& impl = *m_impl;
+    uint64_t total = 0;
+
+    // Width x height x texel size, buffers by width. Leaves out the 64 KB placement rounding, and doesn't go
+    // through GetResourceAllocationInfo, which OptiScaler hooks.
+    const auto Add = [&](ID3D12Resource* resource)
+    {
+        if (resource == nullptr)
+            return;
+
+        const D3D12_RESOURCE_DESC desc = resource->GetDesc();
+
+        if (desc.Dimension == D3D12_RESOURCE_DIMENSION_BUFFER)
+        {
+            total += desc.Width;
+            return;
+        }
+
+        uint64_t texelBytes = 0;
+
+        switch (desc.Format)
+        {
+        case DXGI_FORMAT_R32G32B32A32_FLOAT:
+            texelBytes = 16;
+            break;
+        case DXGI_FORMAT_R16G16B16A16_FLOAT:
+            texelBytes = 8;
+            break;
+        case DXGI_FORMAT_R8G8B8A8_UNORM:
+        case DXGI_FORMAT_R10G10B10A2_UNORM:
+        case DXGI_FORMAT_R32_FLOAT:
+            texelBytes = 4;
+            break;
+        default:
+            texelBytes = 4;
+            break;
+        }
+
+        total += desc.Width * desc.Height * desc.DepthOrArraySize * texelBytes;
+    };
+
+    for (ID3D12Resource* resource : impl.m_out.AsRawArray)
+        Add(resource);
+
+    Add(impl.m_LinearDepth.Get());
+    Add(impl.m_PrevLinearDepth.Get());
+    Add(impl.m_outputBuffer1.Get());
+    Add(impl.m_outputBuffer2.Get());
+    Add(impl.m_probeTex.Get());
+
+    for (const auto& slot : impl.m_probeSlots)
+        Add(slot.readback.Get());
+
+    return total;
+}
+
 bool FSRDPreprocessor_Dx12::Blit(ID3D12GraphicsCommandList* cmdList, ID3D12Resource* srcTex, ID3D12Resource* dstTex,
                                  XMFLOAT2 dim) const
 

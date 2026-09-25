@@ -3,6 +3,9 @@
 #include "shaders/fsrd_preprocess/FSRDPreprocessor_Dx12.h"
 #include "fsr-rr/ffx_denoiser.h"
 #include <DirectXMath.h>
+#include <atomic>
+#include <dxgi1_4.h>
+#include <wrl/client.h>
 
 /**
  * @brief Unfied denoiser-upscaler utilising AMD FSR Ray Regeneration and Super Resolution with
@@ -139,6 +142,8 @@ class FSRDFeatureDx12 : public FFXFeatureDx12
         std::unique_ptr<GpuTime_Dx12> timer;
         double last = 0.0;
         double avg = 0.0;
+        uint64_t samples = 0;  // readings folded into avg since the timers started or the last restart
+        double baseline = 0.0; // avg once samples reached FrameInfo::kBaselineSamples
     };
 
     enum Stage
@@ -155,6 +160,27 @@ class FSRDFeatureDx12 : public FFXFeatureDx12
     };
 
     GpuTime_Dx12* StageTimerOf(Stage stage) { return _stageTimers[stage].timer.get(); }
+
+    // Memory diagnostics (25 Sep). Live counts are process-wide, so a feature or context that outlives its
+    // replacement (a leak, or a game that creates a new Ray Reconstruction feature without releasing the old one)
+    // shows up as a count above 1 that doesn't come back down.
+    static inline std::atomic<int> s_liveFeatures { 0 };
+    static inline std::atomic<int> s_liveContexts { 0 };
+
+    Microsoft::WRL::ComPtr<IDXGIAdapter3> _dxgiAdapter; // for QueryVideoMemoryInfo
+    bool _dxgiAdapterTried = false;
+    uint32_t _memQueryCountdown = 0; // frames until the next DXGI query
+    bool _memValid = false;
+    DXGI_QUERY_VIDEO_MEMORY_INFO _memLocal {};
+    DXGI_QUERY_VIDEO_MEMORY_INFO _memNonLocal {};
+    uint64_t _memLocalPeak = 0;
+    uint64_t _memSamples = 0;
+    uint64_t _memOverBudgetSamples = 0;
+    uint64_t _memDenoiser = 0; // bytes, queried once the context and the converter exist
+    uint64_t _memShim = 0;
+
+    void QueryContextMemory(); // denoiser and shim allocations, once after creation
+    void UpdateVideoMemory();  // DXGI usage and budget, about once a second
 
     // Camera movement over the last frame (diagnostics, 24 Sep)
     float _lastCamMove = 0.0f;

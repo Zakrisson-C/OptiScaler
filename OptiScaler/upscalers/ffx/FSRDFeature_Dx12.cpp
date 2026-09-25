@@ -8,6 +8,7 @@
 #include "shaders/fsrd_preprocess/FSRDDiagnostics.h"
 #include "MathUtils.h"
 #include "OptiTexts.h"
+#include <proxies/Dxgi_Proxy.h>
 #include <atomic>
 #include <format>
 #include <string>
@@ -390,10 +391,14 @@ FSRDFeatureDx12::FSRDFeatureDx12(uint32_t InHandleId, NVSDK_NGX_Parameter* InPar
         LOG_INFO("amd_fidelityfx_denoiser_dx12.dll methods loaded!");
     else
         LOG_ERROR("can't load amd_fidelityfx_denoiser_dx12.dll methods!");
+
+    s_liveFeatures++;
 }
 
 FSRDFeatureDx12::~FSRDFeatureDx12()
 {
+    s_liveFeatures--;
+
     if (State::Instance().isShuttingDown)
         return;
 
@@ -541,6 +546,7 @@ bool FSRDFeatureDx12::CreateDenoiserContext()
         }
 
         _dispatchedOnContext = false;
+        s_liveContexts++;
     }
 
     // Runtime messages (24 Sep): route the denoiser's own errors and warnings, and what validation
@@ -586,6 +592,8 @@ bool FSRDFeatureDx12::CreateDenoiserContext()
 
     if (_albedo16AtCreate)
         LOG_INFO("FSR-RR A/B: albedo textures created as RGBA16_FLOAT");
+
+    QueryContextMemory();
 
     return true;
 }
@@ -636,7 +644,101 @@ bool FSRDFeatureDx12::QueryDenoiserVersions()
 void FSRDFeatureDx12::DestroyDenoiserContext()
 {
     if (_pDenoiserCtx != nullptr)
+    {
         FfxApiProxy::D3D12_DestroyContext(&_pDenoiserCtx, nullptr);
+        _pDenoiserCtx = nullptr;
+        s_liveContexts--;
+    }
+}
+
+void FSRDFeatureDx12::QueryContextMemory()
+{
+    ScopedSkipSpoofingGlobal skipSpoofingGlobal {};
+
+    // Denoiser 1.2 reports what a live context allocated
+    if (_pDenoiserCtx != nullptr)
+    {
+        FfxApiEffectMemoryUsage usage {};
+        ffxQueryDescDenoiserGetGPUMemoryUsage query {};
+        query.header.type = FFX_API_QUERY_DESC_TYPE_DENOISER_GPU_MEMORY_USAGE;
+        query.device = Device;
+        query.maxRenderSize = _denoiserCtxDesc.maxRenderSize;
+        query.signalFlags = _denoiserCtxDesc.signalFlags;
+        query.checkerboardSignalFlags = _denoiserCtxDesc.checkerboardSignalFlags;
+        query.flags = _denoiserCtxDesc.flags;
+        query.gpuMemoryUsage = &usage;
+
+        const ffxReturnCode_t code = FfxApiProxy::D3D12_Query(&_pDenoiserCtx, &query.header);
+        _memDenoiser = (code == FFX_API_RETURN_OK) ? usage.totalUsageInBytes : 0;
+    }
+
+    _memShim = FSRDConvShader != nullptr ? FSRDConvShader->GetGpuMemoryBytes() : 0;
+
+    LOG_INFO("FSR-RR GPU memory: denoiser {:.1f} MB, shim {:.1f} MB; live FSR-RR features {}, denoiser contexts {}",
+             _memDenoiser / 1048576.0, _memShim / 1048576.0, s_liveFeatures.load(), s_liveContexts.load());
+}
+
+void FSRDFeatureDx12::UpdateVideoMemory()
+{
+    // Menu button: restart the peak and the over-budget count from here
+    if (FSRD::Diagnostics::Instance().RestartMemoryStats.exchange(false))
+    {
+        _memLocalPeak = _memValid ? _memLocal.CurrentUsage : 0;
+        _memSamples = 0;
+        _memOverBudgetSamples = 0;
+    }
+
+    if (_memQueryCountdown > 0)
+    {
+        _memQueryCountdown--;
+        return;
+    }
+
+    _memQueryCountdown = 60;
+
+    if (!_dxgiAdapterTried)
+    {
+        _dxgiAdapterTried = true;
+
+        // Same route IdentifyGpu takes: the real CreateDXGIFactory, spoofing off for this thread
+        ScopedSkipSpoofingThread skipSpoofingThread {};
+        DxgiProxy::Init();
+
+        Microsoft::WRL::ComPtr<IDXGIFactory4> factory;
+        const auto createFactory = DxgiProxy::CreateDxgiFactory_();
+
+        if (createFactory != nullptr && Device != nullptr &&
+            SUCCEEDED(createFactory(__uuidof(IDXGIFactory4), (IDXGIFactory**) factory.GetAddressOf())) &&
+            factory != nullptr)
+        {
+            if (FAILED(factory->EnumAdapterByLuid(Device->GetAdapterLuid(), IID_PPV_ARGS(&_dxgiAdapter))))
+                _dxgiAdapter = nullptr;
+        }
+
+        LOG_INFO("FSR-RR memory diagnostics: {}",
+                 _dxgiAdapter != nullptr ? "DXGI adapter found" : "no DXGI adapter, video memory not shown");
+    }
+
+    if (_dxgiAdapter == nullptr)
+        return;
+
+    DXGI_QUERY_VIDEO_MEMORY_INFO local {};
+    DXGI_QUERY_VIDEO_MEMORY_INFO nonLocal {};
+
+    if (FAILED(_dxgiAdapter->QueryVideoMemoryInfo(0, DXGI_MEMORY_SEGMENT_GROUP_LOCAL, &local)))
+        return;
+
+    if (FAILED(_dxgiAdapter->QueryVideoMemoryInfo(0, DXGI_MEMORY_SEGMENT_GROUP_NON_LOCAL, &nonLocal)))
+        nonLocal = {};
+
+    _memLocal = local;
+    _memNonLocal = nonLocal;
+    _memValid = true;
+    _memSamples++;
+    _memLocalPeak = std::max(_memLocalPeak, (uint64_t) local.CurrentUsage);
+
+    if (local.Budget > 0 && local.CurrentUsage > local.Budget)
+        _memOverBudgetSamples++;
 }
 
 bool FSRDFeatureDx12::UpdateSize()
@@ -1395,6 +1497,16 @@ void FSRDFeatureDx12::ReadDetailedGpuTimes(void* commandQueue, std::vector<Detai
 {
     FFXFeatureDx12::ReadDetailedGpuTimes(commandQueue, detailedGpuTimes);
 
+    // Menu button: take the baselines again from here
+    if (FSRD::Diagnostics::Instance().RestartBaselines.exchange(false))
+    {
+        for (auto& stage : _stageTimers)
+        {
+            stage.samples = 0;
+            stage.baseline = 0.0;
+        }
+    }
+
     // Stages that didn't run this frame (bypass views) have nothing new to read and keep their last value.
     for (auto& stage : _stageTimers)
     {
@@ -1405,6 +1517,9 @@ void FSRDFeatureDx12::ReadDetailedGpuTimes(void* commandQueue, std::vector<Detai
         {
             stage.last = *time;
             stage.avg = (stage.avg <= 0.0) ? *time : stage.avg + 0.05 * (*time - stage.avg);
+
+            if (++stage.samples == FSRD::FrameInfo::kBaselineSamples)
+                stage.baseline = stage.avg;
         }
 
         if (stage.last > 0.0)
@@ -1477,7 +1592,21 @@ void FSRDFeatureDx12::PublishDiagnostics(const NVSDK_NGX_Parameter& inParams, bo
     {
         frame.stageNames[i] = _stageTimers[i].name;
         frame.stageMs[i] = (float) _stageTimers[i].avg;
+        frame.stageBaselineMs[i] = (float) _stageTimers[i].baseline;
     }
+
+    UpdateVideoMemory();
+    frame.memValid = _memValid;
+    frame.memLocalUsage = _memLocal.CurrentUsage;
+    frame.memLocalBudget = _memLocal.Budget;
+    frame.memLocalPeak = _memLocalPeak;
+    frame.memNonLocalUsage = _memNonLocal.CurrentUsage;
+    frame.memSamples = _memSamples;
+    frame.memOverBudgetSamples = _memOverBudgetSamples;
+    frame.memDenoiser = _memDenoiser;
+    frame.memShim = _memShim;
+    frame.liveFeatures = s_liveFeatures.load();
+    frame.liveContexts = s_liveContexts.load();
     frame.camTurnDeg = _lastCamTurnDeg;
     frame.dispatches = _dispatchCount;
     frame.indexGaps = _indexGapCount;

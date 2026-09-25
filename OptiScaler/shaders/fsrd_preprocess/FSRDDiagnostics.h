@@ -10,6 +10,7 @@
 // (FfxDenoiserAb*), all off by default.
 
 #include <array>
+#include <atomic>
 #include <cstdint>
 #include <deque>
 #include <dxgiformat.h>
@@ -137,6 +138,26 @@ struct FrameInfo
     static constexpr size_t kStageCount = 4;
     std::array<const char*, kStageCount> stageNames {};
     std::array<float, kStageCount> stageMs {};
+    // The same running mean as it stood kBaselineSamples frames after the stage timers started (or after the
+    // last "Restart baselines"); 0 = not reached yet. Current vs baseline shows whether a stage slows down over a
+    // session.
+    static constexpr uint64_t kBaselineSamples = 600;
+    std::array<float, kStageCount> stageBaselineMs {};
+
+    // Video memory (25 Sep), refreshed about once a second from DXGI. Local = the GPU's own memory, non-local =
+    // system memory holding GPU resources, both for this process. Local usage above the budget means Windows is
+    // evicting resources from VRAM, which costs frame time.
+    bool memValid = false;
+    uint64_t memLocalUsage = 0;
+    uint64_t memLocalBudget = 0;
+    uint64_t memLocalPeak = 0; // since the feature started or the last restart
+    uint64_t memNonLocalUsage = 0;
+    uint64_t memSamples = 0;
+    uint64_t memOverBudgetSamples = 0;
+    uint64_t memDenoiser = 0; // FSR-RR denoiser context, as it reports itself (0 = query not supported)
+    uint64_t memShim = 0;     // the shim's own textures
+    int liveFeatures = 0;     // FSR-RR features alive in the process (a replaced one lingers ~2 s)
+    int liveContexts = 0;     // FSR-RR denoiser contexts alive in the process
 
     float camMove = 0.0f;    // world units moved over the last frame (length of cameraPositionDelta)
     float camTurnDeg = 0.0f; // angle between the previous and current forward axes, degrees
@@ -192,6 +213,11 @@ class Diagnostics
 
     std::deque<RuntimeMessage> Messages; // unique messages, oldest first
     uint64_t MessagesTotal = 0;
+
+    // Set by the menu, cleared by the shim: restart the GPU time baselines (read on the present path) and the
+    // memory peak and over-budget counts (render thread).
+    std::atomic<bool> RestartBaselines { false };
+    std::atomic<bool> RestartMemoryStats { false };
 
     // Returns true the first time a message text is seen, so the caller logs each one once.
     bool AddMessage(const std::string& text, uint32_t type)

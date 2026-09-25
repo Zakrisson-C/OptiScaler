@@ -304,6 +304,11 @@ class FSRDPreprocessor_Dx12
      */
     bool IsAlbedo16() const;
 
+    /**
+     * @brief GPU memory held by the converter's own textures and probe buffers, in bytes (25 Sep, diagnostics).
+     */
+    uint64_t GetGpuMemoryBytes() const;
+
   private:
     struct Impl;
 

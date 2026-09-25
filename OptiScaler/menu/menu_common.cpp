@@ -2973,6 +2973,46 @@ std::string FsrdBuildReport(Config* config, State& state, const FSRD::ProbeReado
 
             return text + std::format(" total {:.2f} ms", total);
         }());
+    if (frame.stageBaselineMs[1] > 0.0f)
+    {
+        float baselineTotal = 0.0f;
+
+        for (float ms : frame.stageBaselineMs)
+            baselineTotal += ms;
+
+        Line(std::format("GPU time at start (after 600 frames): {:.2f}, {:.2f}, {:.2f}, {:.2f} ms; total {:.2f} ms",
+                         frame.stageBaselineMs[0], frame.stageBaselineMs[1], frame.stageBaselineMs[2],
+                         frame.stageBaselineMs[3], baselineTotal));
+    }
+
+    {
+        double sum = 0.0;
+        size_t count = 0;
+
+        for (double ft : state.frameTimes)
+        {
+            if (ft > 0.0 && ft < 1000.0)
+            {
+                sum += ft;
+                count++;
+            }
+        }
+
+        if (count > 0)
+            Line(std::format("Frame time (menu, last {} frames): mean {:.2f} ms", count, sum / count));
+    }
+
+    if (frame.memValid)
+        Line(std::format("Video memory: {:.2f} of {:.2f} GB budget (peak {:.2f}), over budget in {} of {} samples; "
+                         "system memory for GPU {:.2f} GB",
+                         frame.memLocalUsage / 1073741824.0, frame.memLocalBudget / 1073741824.0,
+                         frame.memLocalPeak / 1073741824.0, frame.memOverBudgetSamples, frame.memSamples,
+                         frame.memNonLocalUsage / 1073741824.0));
+    else
+        Line("Video memory: not available");
+
+    Line(std::format("FSR-RR memory: denoiser {:.0f} MB, shim {:.0f} MB; live FSR-RR features {}, denoiser contexts {}",
+                     frame.memDenoiser / 1048576.0, frame.memShim / 1048576.0, frame.liveFeatures, frame.liveContexts));
     Line(
         std::format("Frame index (shim side): {} dispatches, {} gaps (last: {} frames skipped), {} new-context starts, "
                     "{} game resets",
@@ -3281,11 +3321,20 @@ void MenuCommon::RenderFsrdDebugTools(RenderMenuContext& ctx)
         ImGui::Text("Frame index: %llu dispatches, %llu gaps (last %u frames), %llu new-context starts, %llu resets",
                     (unsigned long long) frame.dispatches, (unsigned long long) frame.indexGaps, frame.lastGapFrames,
                     (unsigned long long) frame.contextStarts, (unsigned long long) frame.gameResets);
+        ShowHelpMarker("Compare with 'Frame index jump detected' under Runtime messages.\n"
+                       "Gaps are frames on which the denoiser didn't run (bypass\n"
+                       "debug views, a failed conversion); a new context also starts\n"
+                       "without history. Warnings beyond gaps + starts come from\n"
+                       "somewhere the shim can't see.");
         {
             float total = 0.0f;
+            float baselineTotal = 0.0f;
 
-            for (float ms : frame.stageMs)
-                total += ms;
+            for (size_t i = 0; i < frame.stageMs.size(); i++)
+            {
+                total += frame.stageMs[i];
+                baselineTotal += frame.stageBaselineMs[i];
+            }
 
             ImGui::Text("GPU time: conversion %.2f, denoiser %.2f, composition %.2f, FSR %.2f ms (total %.2f)",
                         frame.stageMs[0], frame.stageMs[1], frame.stageMs[2], frame.stageMs[3], total);
@@ -3294,12 +3343,56 @@ void MenuCommon::RenderFsrdDebugTools(RenderMenuContext& ctx)
                            "Compare the total with the game's frame time, and\n"
                            "toggle a switch to see what it costs. The same\n"
                            "numbers appear in the FPS overlay's upscaler tooltip.");
+
+            if (frame.stageBaselineMs[1] > 0.0f)
+                ImGui::Text("  at start: %.2f, %.2f, %.2f, %.2f ms (total %.2f)", frame.stageBaselineMs[0],
+                            frame.stageBaselineMs[1], frame.stageBaselineMs[2], frame.stageBaselineMs[3],
+                            baselineTotal);
+            else
+                ImGui::TextUnformatted("  at start: measuring...");
+            ShowHelpMarker("The same running means as they stood 600 frames after the\n"
+                           "feature started (or after Restart baselines). If the game\n"
+                           "slows down over a session while these stay put, the time\n"
+                           "is going somewhere other than FSR-RR.");
         }
-        ShowHelpMarker("Compare with 'Frame index jump detected' under Runtime messages.\n"
-                       "Gaps are frames on which the denoiser didn't run (bypass\n"
-                       "debug views, a failed conversion); a new context also starts\n"
-                       "without history. Warnings beyond gaps + starts come from\n"
-                       "somewhere the shim can't see.");
+
+        const auto Mb = [](uint64_t bytes) { return bytes / 1048576.0; };
+        const auto Gb = [](uint64_t bytes) { return bytes / 1073741824.0; };
+
+        if (frame.memValid)
+        {
+            ImGui::Text("VRAM: %.2f of %.2f GB budget (peak %.2f), system memory for GPU %.2f GB",
+                        Gb(frame.memLocalUsage), Gb(frame.memLocalBudget), Gb(frame.memLocalPeak),
+                        Gb(frame.memNonLocalUsage));
+            ImGui::Text("  over budget in %llu of %llu samples", (unsigned long long) frame.memOverBudgetSamples,
+                        (unsigned long long) frame.memSamples);
+        }
+        else
+        {
+            ImGui::TextUnformatted("VRAM: not available");
+        }
+        ShowHelpMarker("This process's video memory as Windows sees it, sampled\n"
+                       "about once a second. The budget is what Windows lets the\n"
+                       "game keep in VRAM; above it, resources get moved to system\n"
+                       "memory and frame times suffer. Usage creeping up over a\n"
+                       "session, or after switching upscalers, is the thing to\n"
+                       "look for; so is system memory for GPU growing.");
+
+        ImGui::Text("FSR-RR memory: denoiser %.0f MB, shim %.0f MB", Mb(frame.memDenoiser), Mb(frame.memShim));
+        ImGui::Text("Live FSR-RR features %d, denoiser contexts %d", frame.liveFeatures, frame.liveContexts);
+        ShowHelpMarker("The denoiser's allocation as it reports it (0 = not\n"
+                       "reported), and the shim's own textures. Live counts are for\n"
+                       "the whole process: after a switch the old feature lingers\n"
+                       "for about 2 seconds, then both should be back to 1. A count\n"
+                       "that keeps growing is a leak.");
+
+        if (ImGui::Button("Restart baselines"))
+        {
+            FSRD::Diagnostics::Instance().RestartBaselines = true;
+            FSRD::Diagnostics::Instance().RestartMemoryStats = true;
+        }
+        ShowHelpMarker("Takes the 'at start' GPU times again 600 frames from now,\n"
+                       "and restarts the VRAM peak and over-budget count.");
         ImGui::TreePop();
     }
 
