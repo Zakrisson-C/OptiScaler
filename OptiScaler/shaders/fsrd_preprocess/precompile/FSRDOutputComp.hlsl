@@ -3,7 +3,7 @@
 #define MainRS \
     "RootFlags(0), " \
     "CBV(b0), " \
-    "DescriptorTable(SRV(t0, numDescriptors = 7), visibility = SHADER_VISIBILITY_ALL), " \
+    "DescriptorTable(SRV(t0, numDescriptors = 8), visibility = SHADER_VISIBILITY_ALL), " \
     "DescriptorTable(UAV(u0, numDescriptors = 1), visibility = SHADER_VISIBILITY_ALL), " \
     "StaticSampler(s0, " \
         "filter = FILTER_MIN_MAG_MIP_LINEAR, " \
@@ -34,6 +34,8 @@ DECLARE_LDS_ARRAY_2D(half4, g_DenoisedColor, KERNEL_SIZE);
 // Feature Flags
 #define FLAGS_RAW_SOURCE_BLIT           (1 << 0)
 #define FLAGS_SCALE_SRC                 (1 << 1)
+// A/B (25 Sep): no Correlation Bias raw blend on pixels the game's SSS guide marks.
+#define FLAGS_SSS_NO_RAW_BLEND          (1 << 3)
 // FLAGS_MODE_2_SIGNAL (1 << 2) removed (transplant, 22 Sep): the split-signal blend below is now
 // unconditional - denoiser 1.2 has no combined-signal shape left to select away from. Found by
 // reading this file fresh this pass; it wasn't in the transplant plan's original §6f scope list.
@@ -60,6 +62,8 @@ Texture2D<half4> InAlbedo2 : register(t3); // Diffuse albedo
 Texture2D<half4> InSkipSignal : register(t4);
 Texture2D<half4> InRawColor : register(t5);
 Texture2D<half4> InColorBeforeParticles : register(t6);
+// DLSS-RR SSS guide (25 Sep): non-zero on subsurface-scattering materials. Optional; null reads 0.
+Texture2D<float> InSSSGuide : register(t7);
 
 RWTexture2D<half4> OutColor : register(u0);
 
@@ -263,7 +267,13 @@ void CSMain(uint3 groupID : SV_GroupID, uint3 gtID : SV_GroupThreadID)
         const int2 smID = gtID.xy + s_SM_HaloOffset;
 
         // Correlate raw RT input with denoiser output
-        const half rawWeight = GetRawColorSimilarity(gtID.xy) * CorrelationBias;
+        half rawWeight = GetRawColorSimilarity(gtID.xy) * CorrelationBias;
+
+        // 25 Sep A/B. The raw blend puts the game's colour back wherever raw and denoised share
+        // structure. On skin that structure is the game's screen-space SSS blur of 1 spp noise -
+        // blotches that look like detail to the SSIM test - so the boiling comes straight back.
+        if (IsSet(FLAGS_SSS_NO_RAW_BLEND) && InSSSGuide[px] != 0.0f)
+            rawWeight = 0.0h;
         
         [branch]
         if (IsSet(FLAGS_DEBUG))

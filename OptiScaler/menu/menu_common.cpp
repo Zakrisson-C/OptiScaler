@@ -2559,6 +2559,8 @@ const char* FsrdLegendText(const char* view)
                                "point. Black = agree; brightness = disagreement, full at 4 px; hue = direction. "
                                "Moving cars and people light up legitimately; static scenery should stay black "
                                "while you move and turn." },
+        { "InSSSGuide", "The game's subsurface scattering guide: where its SSS pass changed the colour. Green = "
+                        "added light, red = removed (full at 50% of the pixel); dim grey = no SSS material." },
         { "OutSpecHitDist", "Specular hit distance as sent to the denoiser, after the gate, Hit Distance Scale and "
                             "the reconstruction switch. Same colours as InSpecHitDist: magenta = 0, Turbo on "
                             "log2(1 + d) over 0..127." },
@@ -2823,6 +2825,12 @@ std::vector<FsrdAbSwitch> FsrdAbSwitches(Config* config)
           "mirror stands still. On the car you drive it doesn't. This sends hit\n"
           "distance 0 where the surface moves by itself (MotionConsistency lit),\n"
           "so reflections there reproject with the paint instead." },
+        { "No raw blend on SSS (skin)", &config->FfxDenoiserAbSssNoRawBlend,
+          "Correlation Bias puts the game's raw colour back wherever raw and\n"
+          "denoised share structure. On skin that structure is the game's own\n"
+          "SSS blur of the noise - blotches the test takes for detail - so the\n"
+          "boiling comes back. This skips the raw blend on pixels the game's SSS\n"
+          "guide marks (InSSSGuide view). Correlation Bias 0 does it everywhere." },
         { "Old frame index (resets every frame)", &config->FfxDenoiserAbFrameIndexDoubled,
           "The transplant's bug, kept for comparison. The frame index handed to\n"
           "the denoiser advanced by 2 per frame (the upscaler's evaluate counts a\n"

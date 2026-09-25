@@ -243,6 +243,7 @@ enum class DebugModes : uint64_t
     MotionConsistency = FSRDConvFlags::DebugMotionConsistency, // 24 Sep
     FireflyClamp = FSRDConvFlags::DebugFireflyClamp,           // 25 Sep
     OutSpecHitDist = FSRDConvFlags::DebugOutSpecHitDist,       // 25 Sep
+    InSSSGuide = FSRDConvFlags::DebugInSSSGuide,               // 25 Sep
 
     CompositionDebugOffset = 16u,
     CompositionDebug = (uint64_t) FSRDCompFlags::Debug << CompositionDebugOffset,
@@ -319,6 +320,7 @@ constexpr auto kDebugModes = std::to_array<ModeNamePair>({
     { "MotionConsistency", (uint64_t) DebugModes::MotionConsistency },
     { "FireflyClamp", (uint64_t) DebugModes::FireflyClamp },
     { "OutSpecHitDist", (uint64_t) DebugModes::OutSpecHitDist },
+    { "InSSSGuide", (uint64_t) DebugModes::InSSSGuide },
 
     { "Signal1", (uint64_t) DebugModes::Signal1 },
     { "Signal2", (uint64_t) DebugModes::Signal2 },
@@ -803,6 +805,10 @@ bool FSRDFeatureDx12::EvaluateInternal(ID3D12GraphicsCommandList* InCommandList,
 
         TryGetNGXVoidPointer(inParams, NVSDK_NGX_Parameter_Color, compDesc.InRawColor);
         TryGetNGXVoidPointer(inParams, NVSDK_NGX_Parameter_DLSSD_ColorBeforeParticles, compDesc.InColorBeforeParticles);
+        compDesc.InSSSGuide = _convDesc.InSSSGuide;
+
+        if (cfg.FfxDenoiserAbActive.value_or_default() && cfg.FfxDenoiserAbSssNoRawBlend.value_or_default())
+            compDesc.Flags |= (uint32_t) FSRDCompFlags::SssNoRawBlend;
 
         if (!isFfxDebug)
         {
@@ -1067,6 +1073,12 @@ bool FSRDFeatureDx12::PrepareDenoiseConvInput(const NVSDK_NGX_Parameter& inParam
 
     TryGetNGXVoidPointer(inParams, NVSDK_NGX_Parameter_DLSS_Input_Bias_Current_Color_Mask,
                          _convDesc.Resources.InBiasMask);
+
+    // 25 Sep: the game's SSS guide (optional). Cyberpunk provides it: skin arrives after its
+    // screen-space SSS blur, and this marks where that blur changed the colour.
+    _convDesc.InSSSGuide = nullptr;
+    TryGetNGXVoidPointer(inParams, NVSDK_NGX_Parameter_DLSSD_ScreenSpaceSubsurfaceScatteringGuide,
+                         _convDesc.InSSSGuide);
 
     // Optional. Specular hit distance can be used with mode-2 denoising to track movement inside reflections,
     // in addition to primary motion tracking for the surface and camera.

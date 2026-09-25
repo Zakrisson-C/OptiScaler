@@ -509,6 +509,7 @@ struct FSRDPreprocessor_Dx12::Impl
 
         in.Resources.InBlurColor = m_smoothFloor;
         in.Resources.InPrevLinearDepth = m_PrevLinearDepth.Get();
+        in.Resources.InSSSGuide = desc.InSSSGuide;
 
         // A null SRV reads as zero, so the shader is safe without this, but the flag keeps
         // the "no mask provided" case explicit and visible in the debug views.
@@ -594,7 +595,8 @@ struct FSRDPreprocessor_Dx12::Impl
                              .InAlbedo2 = outResources.DiffAlbedo.Get(),
                              .InSkipSignal = outResources.SkipSignal.Get(),
                              .InRawColor = desc.InRawColor,
-                             .InColorBeforeParticles = desc.InColorBeforeParticles };
+                             .InColorBeforeParticles = desc.InColorBeforeParticles,
+                             .InSSSGuide = desc.InSSSGuide };
 
         std::array<ID3D12Resource*, 1> uavs { m_out.Resources.Motion.Get() };
         const std::span<const byte> cbData((const byte*) &constants, sizeof(constants));

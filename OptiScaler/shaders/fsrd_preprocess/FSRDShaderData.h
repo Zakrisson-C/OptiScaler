@@ -207,6 +207,7 @@ union Input
 
         ID3D12Resource* InBlurColor;
         ID3D12Resource* InPrevLinearDepth; // t10, last frame's linear depth (24 Sep; was the unused InEdgeGuide)
+        ID3D12Resource* InSSSGuide;        // t11, DLSSD SSS guide (25 Sep, optional, debug view only)
     };
 
     // The number of D3D12 resources in the struct
@@ -302,6 +303,7 @@ union Input
         ID3D12Resource* InSkipSignal;
         ID3D12Resource* InRawColor;
         ID3D12Resource* InColorBeforeParticles; // NVSDK_NGX_Parameter_DLSSD_ColorBeforeParticles
+        ID3D12Resource* InSSSGuide;             // DLSSD SSS guide (25 Sep, optional)
     };
 
     // The number of D3D12 resources in the struct

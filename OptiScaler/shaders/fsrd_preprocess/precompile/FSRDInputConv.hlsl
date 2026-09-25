@@ -4,7 +4,7 @@
 #define MainRS \
     "RootFlags(0), " \
     "CBV(b0), " \
-    "DescriptorTable(SRV(t0, numDescriptors = 11), visibility = SHADER_VISIBILITY_ALL), " \
+    "DescriptorTable(SRV(t0, numDescriptors = 12), visibility = SHADER_VISIBILITY_ALL), " \
     "DescriptorTable(UAV(u0, numDescriptors = 8), visibility = SHADER_VISIBILITY_ALL), "
 
 // Dispatch config
@@ -82,6 +82,8 @@ static const uint2 s_ThreadGroupSize = uint2(THREAD_GROUP_SIZE_X, THREAD_GROUP_S
 #define FLAGS_DEBUG_FIREFLY_CLAMP       (27 << 17 | FLAGS_DEBUG)
 // 25 Sep. Specular hit distance as sent to the denoiser (after gate, scale and reconstruction).
 #define FLAGS_DEBUG_OUT_SPEC_HIT_DIST   (28 << 17 | FLAGS_DEBUG)
+// 25 Sep. The game's SSS guide: where its screen-space subsurface scattering changed the colour.
+#define FLAGS_DEBUG_IN_SSS_GUIDE        (29 << 17 | FLAGS_DEBUG)
 
 // DLSS-RR Inputs
 Texture2D<half3> InColor : register(t0); // RGB - NVSDK_NGX_Parameter_Color
@@ -99,6 +101,10 @@ Texture2D<half4> InFloorColor : register(t9);
 // Last frame's linear depth, for the object-motion depth delta (24 Sep). Read only with
 // FLAGS_AB_CAMERA_DEPTH_DELTA clear (the default since 25 Sep).
 Texture2D<float> InPrevLinearDepth : register(t10);
+
+// DLSS-RR subsurface scattering guide (25 Sep): luminance(colour after SSS - colour before SSS), 0 on
+// pixels without an SSS material (Streamline DLSS-RR guide). Optional; a null SRV reads 0. Debug view only.
+Texture2D<float> InSSSGuide : register(t11);
 
 // FSR-RR - ffxDispatchDescDenoiserIndirectSpecular / ffxDispatchDescDenoiserIndirectDiffuse
 // (transplant, 22 Sep: Mode 1's combined-signal shape removed, no successor in denoiser 1.2)
@@ -754,6 +760,18 @@ void CSMain(uint3 groupID : SV_GroupID, uint3 gtID : SV_GroupThreadID)
                 // Nothing red with Firefly Clamp at 0.
                 // 25 Sep. Hit distance as sent: same colours as InSpecHitDist (magenta = 0).
                 // Compare the two to see the gate, the reconstruction and follow-surface at work.
+                // 25 Sep. SSS guide relative to the pixel's luminance: green = the game's SSS pass
+                // added light, red = it took light away (full at 50% of the pixel), over a dim grey
+                // copy of the raw image where the guide is 0 (no SSS material).
+                case FLAGS_DEBUG_IN_SSS_GUIDE:
+                {
+                    const float sss = InSSSGuide[px];
+                    const float relative = sss / max(rawLuma, 1e-3f);
+                    debugColor = (sss != 0.0f) ? VisualizeSignedDiff(relative, 2.0f) + 0.1f
+                                               : 0.25f * saturate(rawLuma).xxx;
+                    break;
+                }
+
                 case FLAGS_DEBUG_OUT_SPEC_HIT_DIST:
                     debugColor = (hitDist <= 0.0f) ? float3(1.0f, 0.0f, 1.0f)
                                                    : TurboColormap(log2(1.0f + float(hitDist)) * (1.0f / 7.0f));

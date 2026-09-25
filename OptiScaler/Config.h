@@ -585,6 +585,8 @@ class Config
     // distance -> 0 on pixels that move by themselves, so their reflections reproject with the surface.
     CustomOptional<bool> FfxDenoiserAbHitDistRecon { false };
     CustomOptional<bool> FfxDenoiserAbSpecFollowSurface { false };
+    // SssNoRawBlend (25 Sep): no Correlation Bias raw blend on pixels the game's SSS guide marks.
+    CustomOptional<bool> FfxDenoiserAbSssNoRawBlend { false };
 
     // Keys: flip FfxDenoiserAbActive, and toggle between no debug view and the last one used.
     CustomOptional<int> FfxDenoiserAbShortcutKey { UnboundKey };

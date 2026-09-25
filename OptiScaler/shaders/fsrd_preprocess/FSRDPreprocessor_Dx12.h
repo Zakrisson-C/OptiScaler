@@ -88,6 +88,7 @@ class FSRDPreprocessor_Dx12
         DebugMotionConsistency = 26 << 17 | Debug, // game motion vectors vs camera matrices (24 Sep)
         DebugFireflyClamp = 27 << 17 | Debug,      // pixels the firefly clamp scales down (25 Sep)
         DebugOutSpecHitDist = 28 << 17 | Debug,    // spec hit distance as sent (25 Sep)
+        DebugInSSSGuide = 29 << 17 | Debug,        // the game's SSS guide (25 Sep)
     };
 
     enum class CompFlags : uint32_t
@@ -95,6 +96,7 @@ class FSRDPreprocessor_Dx12
         None = 0,
         RawSourceBlit = 1 << 0, // Bypass composition and write unmodified input
         ScaleSrc = 1 << 1,      // Enable bilinear scaling to output
+        SssNoRawBlend = 1 << 3, // A/B (25 Sep): no Correlation Bias raw blend on SSS-guide pixels
         // Mode2Signal (1 << 2) removed (transplant, 22 Sep): the composition shader always blends
         // both split signals now - see FSRDOutputComp.hlsl. Bit 2 deliberately left unused.
 
@@ -138,6 +140,9 @@ class FSRDPreprocessor_Dx12
     struct ConversionDesc
     {
         InputResources Resources;
+
+        // DLSSD SSS guide (25 Sep, optional): bound at t11 for the InSSSGuide view only.
+        ID3D12Resource* InSSSGuide = nullptr;
 
         DirectX::XMFLOAT4X4 InvViewMatrix;  // DLSSD WorldToView^1 - Camera matrix
         DirectX::XMFLOAT4X4 InvProjMatrix;  // DLSSD ViewToClip^-1 - Projection
@@ -229,6 +234,7 @@ class FSRDPreprocessor_Dx12
 
         ID3D12Resource* InRawColor;
         ID3D12Resource* InColorBeforeParticles; // NVSDK_NGX_Parameter_DLSSD_ColorBeforeParticles (Optional)
+        ID3D12Resource* InSSSGuide = nullptr;   // DLSSD SSS guide (Optional, 25 Sep)
     };
 
   public:
