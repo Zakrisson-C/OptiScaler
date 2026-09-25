@@ -371,12 +371,11 @@ struct FSRDPreprocessor_Dx12::Impl
 
         m_LinearDepth = CreateTex(FSRDFormats::LinearDepth, L"FSR_Conv_LinearDepth");
         m_PrevLinearDepth = CreateTex(FSRDFormats::LinearDepth, L"FSR_Conv_PrevLinearDepth");
-        m_outputBuffer1 = CreateTex(FSRDFormats::OutputBuffer1, L"FSR_Conv_OutputBuffer1");
-        m_outputBuffer2 = CreateTex(FSRDFormats::OutputBuffer2, L"FSR_Conv_OutputBuffer2");
 
         m_smoothFloor = nullptr;
 
-        // Scratch buffers
+        // Scratch buffers: floor ping-pong, then the denoiser's outputs. (25 Sep: these were created twice in a
+        // row; the first pair was released straight away, a wasted allocation per feature creation.)
         m_outputBuffer1 = CreateTex(FSRDFormats::OutputBuffer1, L"FSR_Conv_OutputBuffer1");
         m_outputBuffer2 = CreateTex(FSRDFormats::OutputBuffer2, L"FSR_Conv_OutputBuffer2");
 
@@ -386,11 +385,38 @@ struct FSRDPreprocessor_Dx12::Impl
         outResources.DiffRadiance = CreateTex(FSRDFormats::DiffRadiance, L"FSR_Conv_DiffRadiance");
     }
 
-    void DispatchFloorSeed(ID3D12GraphicsCommandList* cmdList, const ConversionDesc& desc)
+    // depthOnly (25 Sep): the floor is off, so only the linear depth is written; no median, no gradient, and
+    // no floor for the packing shader (a null SRV reads as zero).
+    void DispatchFloorSeed(ID3D12GraphicsCommandList* cmdList, const ConversionDesc& desc, bool depthOnly)
     {
         const XMFLOAT2 dispatchSize = { desc.RenderSize.x, desc.RenderSize.y };
         const bool isDepthLinear = (desc.Flags & (uint32_t) ConvFlags::IsDepthLinear);
         ID3D12Resource* inColor = desc.Resources.InColor;
+
+        const uint32_t seedFlags = isDepthLinear ? uint32_t(FloorSeed::Flags::LinearDepth) : 0u;
+
+        if (depthOnly)
+        {
+            FloorSeed::Constants constants = { .InvProjMatrix = desc.InvProjMatrix,
+                                               .RenderSize = desc.RenderSize,
+                                               .NearPlane = desc.NearPlane,
+                                               .FarPlane = desc.FarPlane,
+                                               .Flags = seedFlags | uint32_t(FloorSeed::Flags::DepthOnly) };
+            const auto cbData = GetAsByteSpan(constants);
+
+            FloorSeed::Input in = { .Resources = { .InColor = inColor,
+                                                   .InNormals = desc.Resources.InNormals,
+                                                   .InDepth = desc.Resources.InDepth } };
+
+            FloorSeed::Output out = { .Resources = { .OutColor = m_outputBuffer1.Get(),
+                                                     .OutLinearDepth = m_LinearDepth.Get(),
+                                                     .OutDepthGradient = m_out.Resources.Motion.Get() } };
+
+            m_floorSeedShader.Dispatch(cmdList, cbData, in.AsArray, out.AsArray, dispatchSize);
+
+            m_smoothFloor = nullptr;
+            return;
+        }
 
         for (int i = 0; i < FloorSeed::kPasses; i++)
         {
@@ -398,7 +424,7 @@ struct FSRDPreprocessor_Dx12::Impl
                                                .RenderSize = desc.RenderSize,
                                                .NearPlane = desc.NearPlane,
                                                .FarPlane = desc.FarPlane,
-                                               .Flags = isDepthLinear ? uint32_t(FloorSeed::Flags::LinearDepth) : 0u };
+                                               .Flags = seedFlags };
             const auto cbData = GetAsByteSpan(constants);
 
             // Create median filtered raw color before cross bilateral filtering
@@ -545,9 +571,22 @@ struct FSRDPreprocessor_Dx12::Impl
         // Reads back the probe copy recorded kRingSize frames ago and picks this frame's window
         BeginProbeFrame(desc);
 
-        // Filtered raster lighting estimate
-        DispatchFloorSeed(cmdList, desc);
-        DispatchFloorFilter(cmdList, desc);
+        // Filtered raster lighting estimate.
+        //
+        // 25 Sep: with Floor Isolation 0 the packing shader multiplies the floor by zero, so it isn't computed:
+        // the seed pass writes linear depth only and the five a-trous passes are skipped. The one thing the
+        // floor still fed at 0 was the SkipSignal alpha, the luminance reference of the Correlation Bias raw
+        // blend, where it added the a-trous floor's light although the output contains none of it (audit
+        // finding 2); with no floor that alpha is zero. The floor debug views still get a floor.
+        const uint32_t debugMode = desc.Flags & uint32_t(ConvFlags::DebugModeMask);
+        const bool floorView =
+            debugMode == uint32_t(ConvFlags::DebugFloorVariance) || debugMode == uint32_t(ConvFlags::DebugFloorColor);
+        const bool floorActive = desc.FloorIsolation > 0.0f || floorView;
+
+        DispatchFloorSeed(cmdList, desc, !floorActive);
+
+        if (floorActive)
+            DispatchFloorFilter(cmdList, desc);
 
         // DLSS-RR to FSR-RR conversion
         DispatchPackingShader(cmdList, desc);

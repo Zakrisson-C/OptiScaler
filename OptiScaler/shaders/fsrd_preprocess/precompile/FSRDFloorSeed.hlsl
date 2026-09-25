@@ -21,6 +21,7 @@ static const uint2 s_ThreadGroupSize = uint2(THREAD_GROUP_SIZE_X, THREAD_GROUP_S
 
 // Flags
 #define FLAGS_LINEAR_DEPTH      (1 << 0)
+#define FLAGS_DEPTH_ONLY        (1 << 1) // 25 Sep: floor off, write linear depth only
 
 // 5x5 sorting filter config
 #define SORT_KERNEL_SIZE        5
@@ -266,6 +267,20 @@ void PopulateSharedMemory(const uint2 groupID, const int2 gtID)
 void CSMain(uint3 groupID : SV_GroupID, uint3 gtID : SV_GroupThreadID)
 {
     const int2 px = groupID.xy * s_ThreadGroupSize + gtID.xy;
+
+    // 25 Sep: floor off (Floor Isolation 0). Linear depth is the only output anything reads, so skip the
+    // median, the gradient and the shared memory fill. The same value as below: GetViewSpacePos(px).z is what
+    // PopulateSharedMemory stores for this pixel. Flags come from the constant buffer, so the whole group takes
+    // this branch and returning before the barrier is safe.
+    [branch]
+    if (IsSet(FLAGS_DEPTH_ONLY))
+    {
+        if (px.x < RenderSize.x && px.y < RenderSize.y)
+            OutLinearDepth[px] = GetViewSpacePos(px).z;
+
+        return;
+    }
+
     PopulateSharedMemory(groupID.xy, gtID.xy);
     GroupMemoryBarrierWithGroupSync();
 

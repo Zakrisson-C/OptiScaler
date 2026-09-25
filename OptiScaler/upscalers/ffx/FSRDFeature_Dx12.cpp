@@ -10,6 +10,8 @@
 #include "OptiTexts.h"
 #include <atomic>
 #include <format>
+#include <string>
+#include <unordered_set>
 
 using namespace DirectX;
 using namespace OptiMath;
@@ -55,10 +57,16 @@ static bool TryGetLoggedResource(const NVSDK_NGX_Parameter& ngxParams, const cha
 {
     const bool success = TryGetNGXVoidPointer(ngxParams, key, outValue);
 
-    if (success)
-        LOG_DEBUG("{} exists..", key);
-    else
-        LOG_ERROR("{} is missing!!", key);
+    // 25 Sep: called for every input on every frame. Success is no longer logged (at the default log level,
+    // trace, that was a flushed log line per input per frame when logging to file), and a missing input is
+    // reported once per key; the Diagnostics panel shows presence per frame.
+    if (!success)
+    {
+        static std::unordered_set<std::string> s_reportedMissing;
+
+        if (s_reportedMissing.insert(key).second)
+            LOG_ERROR("{} is missing!!", key);
+    }
 
     return success;
 }
@@ -631,7 +639,7 @@ void FSRDFeatureDx12::DestroyDenoiserContext()
         FfxApiProxy::D3D12_DestroyContext(&_pDenoiserCtx, nullptr);
 }
 
-void FSRDFeatureDx12::UpdateSize()
+bool FSRDFeatureDx12::UpdateSize()
 {
     // FSR-RR doesn't currently have proper DRS support. The example implementation
     // reinits on resolution change as well.
@@ -647,33 +655,34 @@ void FSRDFeatureDx12::UpdateSize()
                                 _denoiserCtxDesc.flags != DesiredCreateFlags() ||
                                 _albedo16AtCreate != DesiredAlbedo16();
 
-    if (optionsChanged && !sizeChanged)
-    {
-        auto& state = State::Instance();
+    if (!sizeChanged && !optionsChanged)
+        return false;
 
-        if (!state.changeBackend[Handle()->Id])
-        {
+    // 25 Sep: a resolution change goes the same way. It used to destroy and recreate the denoiser context and
+    // the converter in place, freeing resources the previous frames' command lists may still be executing
+    // against (denoiser history, converter buffers) and allocating the new ones in the same breath.
+    auto& state = State::Instance();
+
+    if (!state.changeBackend[Handle()->Id])
+    {
+        if (sizeChanged)
+            LOG_INFO("Recreating FSR-RR for resolution change. Previous: {} x {}, New: {} x {}",
+                     _denoiserCtxDesc.maxRenderSize.width, _denoiserCtxDesc.maxRenderSize.height, RenderWidth(),
+                     RenderHeight());
+        else
             LOG_INFO("FSR-RR create-time option changed, recreating the feature");
-            state.newBackend = Upscaler::FSRD;
-            state.changeBackend[Handle()->Id] = true;
-        }
-    }
-    else if (sizeChanged)
-    {
-        LOG_INFO("Reinitializing FSR-RR for resolution change. "
-                 "Previous: {} x {}, New: {} x {}",
-                 _denoiserCtxDesc.maxRenderSize.width, _denoiserCtxDesc.maxRenderSize.height, RenderWidth(),
-                 RenderHeight());
 
-        DestroyDenoiserContext();
-        CreateDenoiserContext();
+        state.newBackend = Upscaler::FSRD;
+        state.changeBackend[Handle()->Id] = true;
     }
+
+    // Options: this frame can still run on the current context. Size: the context and the converter buffers are
+    // the old size, so skip the frame (the recreation itself takes the next two).
+    return sizeChanged;
 }
 
 bool FSRDFeatureDx12::EvaluateInternal(ID3D12GraphicsCommandList* InCommandList, NVSDK_NGX_Parameter* InParameters)
 {
-    LOG_FUNC();
-
     if (!IsInited())
         return false;
 
@@ -685,7 +694,8 @@ bool FSRDFeatureDx12::EvaluateInternal(ID3D12GraphicsCommandList* InCommandList,
     // doesn't run (bypass views, a failed conversion) still shows up as a jump and resets its history.
     _denoiserFrameIndex++;
 
-    UpdateSize();
+    if (UpdateSize())
+        return true;
 
     const auto dbgMode = static_cast<DebugModes>(cfg.FfxDenoiserDebugMode.value_or_default());
     const bool isDebugVis = (uint32_t) dbgMode & (uint32_t) DebugModes::ConversionDebug;
@@ -1032,8 +1042,6 @@ bool FSRDFeatureDx12::PrepareDenoiserInput(ID3D12GraphicsCommandList* InCommandL
     dispatchDesc.jitterOffsets.x = 2.0f * (jitterX / (float) RenderWidth());
     dispatchDesc.jitterOffsets.y = -2.0f * (jitterY / (float) RenderHeight());
 
-    LOG_DEBUG("Jitter NDC [{:.6f}, {:.6f}]", dispatchDesc.jitterOffsets.x, dispatchDesc.jitterOffsets.y);
-
     return true;
 }
 
@@ -1098,6 +1106,7 @@ bool FSRDFeatureDx12::PrepareDenoiseConvInput(const NVSDK_NGX_Parameter& inParam
     // World to view/camera space (V)
     _prevViewMatrix = _viewMatrix;
     _viewMatrix = {};
+    bool haveView = true;
 
     if (!TryGetNGXMatrix(inParams, NVSDK_NGX_Parameter_DLSS_WORLD_TO_VIEW_MATRIX, _viewMatrix))
     {
@@ -1115,12 +1124,23 @@ bool FSRDFeatureDx12::PrepareDenoiseConvInput(const NVSDK_NGX_Parameter& inParam
         {
             LOG_ERROR("View matrix missing! Denoiser not ready.");
             isReady = false;
+            haveView = false;
         }
     }
     else
     {
         // Camera rotation and position
         _invViewMatrix = XMMatrixInverse(nullptr, _viewMatrix);
+    }
+
+    // 25 Sep: a new feature has no previous camera. Start from this frame's, so the first frame's camera-model
+    // motion, camera position delta and camera diagnostics are zero instead of being computed from
+    // uninitialised members.
+    if (haveView && !_haveCameraHistory)
+    {
+        _prevViewMatrix = _viewMatrix;
+        _lastCamPos = GetFloat3Column(_invViewMatrix, 3);
+        _haveCameraHistory = true;
     }
 
     // Perspective projection matrix (P)
@@ -1259,8 +1279,6 @@ bool FSRDFeatureDx12::ConvertDenoiserBuffers(ID3D12GraphicsCommandList* InComman
     if (!s_isHWDepth)
         _convDesc.Flags |= (uint32_t) FSRDConvFlags::IsDepthLinear;
 
-    LOG_DEBUG("Distpaching FSRD Input Converter");
-
     // Dispatch resource converter. Outputs are automatically transitioned for reading.
     {
         ScopedGpuTime_Dx12 stageTime(StageTimerOf(StageConversion), InCommandList);
@@ -1330,7 +1348,6 @@ bool FSRDFeatureDx12::DispatchDenoiser(ID3D12GraphicsCommandList* InCommandList,
 
     _lastDispatchedIndex = dispatchDesc.frameIndex;
 
-    LOG_DEBUG("Dispatching FSR-RR...");
     const ffxReturnCode_t result = FfxApiProxy::D3D12_Dispatch(&_pDenoiserCtx, &dispatchDesc.header);
     _lastDispatchCode = result;
     _lastDispatchFlags = dispatchDesc.flags;

@@ -8,7 +8,11 @@
 class FFXFeatureDx12 : public FFXFeature, public IFeature_Dx12
 {
   private:
-    ID3D12Resource* smallerColor[2];
+    // 25 Sep: was uninitialised. The destructor SAFE_RELEASEs both and CreateBufferResourceWithSize reads
+    // them, so a feature that never took the padded-colour path (every FSR-RR and most FSR 4 features)
+    // released whatever the heap had left there on destruction: harmless when that happened to be zero, a
+    // crash on switching upscalers otherwise.
+    ID3D12Resource* smallerColor[2] = {};
 
     NVSDK_NGX_Parameter* SetParameters(NVSDK_NGX_Parameter* InParameters);
 

@@ -114,7 +114,8 @@ class FSRDFeatureDx12 : public FFXFeatureDx12
     static uint32_t DesiredSignalFlags();
     static uint32_t DesiredCreateFlags();
 
-    DirectX::XMFLOAT3 _lastCamPos; // Last world space camera position
+    DirectX::XMFLOAT3 _lastCamPos {}; // Last world space camera position
+    bool _haveCameraHistory = false;  // 25 Sep: set once the first frame's camera has been read
 
     // Denoiser frame index, advanced exactly once per EvaluateInternal() call. _frameCount can't be used:
     // FFXFeatureDx12::EvaluateInternal() advances it as well, so it moves by 2 per frame whenever the
@@ -160,11 +161,11 @@ class FSRDFeatureDx12 : public FFXFeatureDx12
     float _lastCamTurnDeg = 0.0f;
 
     // Matrices
-    DirectX::XMMATRIX _invViewMatrix;  // Camera rotation and translation
-    DirectX::XMMATRIX _viewMatrix;     // World to camera space
-    DirectX::XMMATRIX _prevViewMatrix; // Last world to camera space
-    DirectX::XMMATRIX _projMatrix;     // Perspective projection matrix
-    bool _isRightHanded;               // True if the camera matrix is right handed
+    DirectX::XMMATRIX _invViewMatrix = DirectX::XMMatrixIdentity();  // Camera rotation and translation
+    DirectX::XMMATRIX _viewMatrix = DirectX::XMMatrixIdentity();     // World to camera space
+    DirectX::XMMATRIX _prevViewMatrix = DirectX::XMMatrixIdentity(); // Last world to camera space
+    DirectX::XMMATRIX _projMatrix = DirectX::XMMatrixIdentity();     // Perspective projection matrix
+    bool _isRightHanded = false;                                     // True if the camera matrix is right handed
 
     std::unique_ptr<FSRDPreprocessor_Dx12> FSRDConvShader;
 
@@ -176,7 +177,9 @@ class FSRDFeatureDx12 : public FFXFeatureDx12
 
     void DestroyDenoiserContext();
 
-    void UpdateSize();
+    // Requests recreation when the render size or a create-time option changed. True = skip this frame: the
+    // render size changed and the context and converter buffers are still the old size.
+    bool UpdateSize();
 
     /**
      * @brief Generates FFX denoiser configuration and input buffers from DLSS-RR inputs and NGX configurations.
