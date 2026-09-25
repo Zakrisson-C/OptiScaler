@@ -3989,12 +3989,13 @@ void MenuCommon::RenderActiveUpscalerSettings(RenderMenuContext& ctx)
 
                 if (ImGui::Button("Reset"))
                 {
-                    config->FfxDenoiserDisocThreshold = 0.1f;
+                    // Same values as the Config.h defaults (25 Sep)
+                    config->FfxDenoiserDisocThreshold = 0.01f;
                     config->FfxDenoiserCrossBlNormStr = 0.5f;
                     config->FfxDenoiserStabilityBias = 0.5f;
-                    config->FfxDenoiserMaxRadiance = 40000.0f;
+                    config->FfxDenoiserMaxRadiance = 65500.0f;
                     config->FfxDenoiserRadianceClip = 40.0f;
-                    config->FfxDenoiserGaussKernRelax = 0.5f;
+                    config->FfxDenoiserGaussKernRelax = 0.0f;
                 }
 
                 ImGui::SeparatorText("Debug");

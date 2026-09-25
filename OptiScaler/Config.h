@@ -455,12 +455,14 @@ class Config
     CustomOptional<int> FfxDenoiserIndex { 0 };
     CustomOptional<uint64_t> FfxDenoiserDebugMode { 0 };
 
-    CustomOptional<float> FfxDenoiserDisocThreshold { 0.1f };
+    // Chris's tuning with working history (25 Sep): stable, quick to react, little ghosting or boiling.
+    // Disocclusion, Max Radiance and Kernel Relaxation are 1.2's own defaults; the other three are not.
+    CustomOptional<float> FfxDenoiserDisocThreshold { 0.01f };
     CustomOptional<float> FfxDenoiserCrossBlNormStr { 0.5f };
     CustomOptional<float> FfxDenoiserStabilityBias { 0.5f };
-    CustomOptional<float> FfxDenoiserMaxRadiance { 4e4f };
+    CustomOptional<float> FfxDenoiserMaxRadiance { 65500.0f };
     CustomOptional<float> FfxDenoiserRadianceClip { 40.0f };
-    CustomOptional<float> FfxDenoiserGaussKernRelax { 0.5f };
+    CustomOptional<float> FfxDenoiserGaussKernRelax { 0.0f };
 
     CustomOptional<float> FfxDenoiserCorrelationBias { 1.0f };
     CustomOptional<float> FfxDenoiserFloorIsolation { 1.0f };
