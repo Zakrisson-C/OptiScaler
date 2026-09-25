@@ -133,6 +133,11 @@ struct FrameInfo
     float projB = 0.0f;
     float projW = 0.0f;
     float camPos[3] = {};
+    // GPU time per stage, running mean in ms (25 Sep): conversion + floor, denoiser, composition, upscale.
+    static constexpr size_t kStageCount = 4;
+    std::array<const char*, kStageCount> stageNames {};
+    std::array<float, kStageCount> stageMs {};
+
     float camMove = 0.0f;    // world units moved over the last frame (length of cameraPositionDelta)
     float camTurnDeg = 0.0f; // angle between the previous and current forward axes, degrees
     float jitterPx[2] = {};

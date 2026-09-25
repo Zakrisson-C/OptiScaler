@@ -43,6 +43,9 @@ class FSRDFeatureDx12 : public FFXFeatureDx12
 
     bool EvaluateInternal(ID3D12GraphicsCommandList* InCommandList, NVSDK_NGX_Parameter* InParameters) override;
 
+    // Adds the FSR-RR stage timings (25 Sep) to OptiScaler's per-shader breakdown of the upscaler time.
+    void ReadDetailedGpuTimes(void* commandQueue, std::vector<DetailedGpuTime>& detailedGpuTimes) override;
+
   private:
     union DenoiserConfiguration
     {
@@ -126,6 +129,31 @@ class FSRDFeatureDx12 : public FFXFeatureDx12
     uint32_t _lastGapFrames = 0;
     uint64_t _contextStartCount = 0;
     uint64_t _gameResetCount = 0;
+
+    // GPU time per stage (25 Sep): GPU timestamps around each part of EvaluateInternal(). Read once per
+    // presented frame by ReadDetailedGpuTimes(); avg is a running mean shown in the diagnostics panel.
+    struct StageTimer
+    {
+        const char* name;
+        std::unique_ptr<GpuTime_Dx12> timer;
+        double last = 0.0;
+        double avg = 0.0;
+    };
+
+    enum Stage
+    {
+        StageConversion,
+        StageDenoiser,
+        StageComposition,
+        StageUpscale,
+        StageCount
+    };
+
+    std::array<StageTimer, StageCount> _stageTimers {
+        { { "Shim: conversion + floor" }, { "FSR-RR denoiser" }, { "Shim: composition" }, { "FSR upscale" } }
+    };
+
+    GpuTime_Dx12* StageTimerOf(Stage stage) { return _stageTimers[stage].timer.get(); }
 
     // Camera movement over the last frame (diagnostics, 24 Sep)
     float _lastCamMove = 0.0f;

@@ -2951,6 +2951,21 @@ std::string FsrdBuildReport(Config* config, State& state, const FSRD::ProbeReado
     }
 
     Line(
+        [&]
+        {
+            std::string text = "GPU time (running mean):";
+            float total = 0.0f;
+
+            for (size_t i = 0; i < frame.stageMs.size(); i++)
+            {
+                text +=
+                    std::format(" {} {:.2f} ms;", frame.stageNames[i] ? frame.stageNames[i] : "?", frame.stageMs[i]);
+                total += frame.stageMs[i];
+            }
+
+            return text + std::format(" total {:.2f} ms", total);
+        }());
+    Line(
         std::format("Frame index (shim side): {} dispatches, {} gaps (last: {} frames skipped), {} new-context starts, "
                     "{} game resets",
                     frame.dispatches, frame.indexGaps, frame.lastGapFrames, frame.contextStarts, frame.gameResets));
@@ -3258,6 +3273,20 @@ void MenuCommon::RenderFsrdDebugTools(RenderMenuContext& ctx)
         ImGui::Text("Frame index: %llu dispatches, %llu gaps (last %u frames), %llu new-context starts, %llu resets",
                     (unsigned long long) frame.dispatches, (unsigned long long) frame.indexGaps, frame.lastGapFrames,
                     (unsigned long long) frame.contextStarts, (unsigned long long) frame.gameResets);
+        {
+            float total = 0.0f;
+
+            for (float ms : frame.stageMs)
+                total += ms;
+
+            ImGui::Text("GPU time: conversion %.2f, denoiser %.2f, composition %.2f, FSR %.2f ms (total %.2f)",
+                        frame.stageMs[0], frame.stageMs[1], frame.stageMs[2], frame.stageMs[3], total);
+            ShowHelpMarker("GPU timestamps around each stage, running mean.\n"
+                           "Conversion + composition is the shim's own cost.\n"
+                           "Compare the total with the game's frame time, and\n"
+                           "toggle a switch to see what it costs. The same\n"
+                           "numbers appear in the FPS overlay's upscaler tooltip.");
+        }
         ShowHelpMarker("Compare with 'Frame index jump detected' under Runtime messages.\n"
                        "Gaps are frames on which the denoiser didn't run (bypass\n"
                        "debug views, a failed conversion); a new context also starts\n"

@@ -556,6 +556,13 @@ bool FSRDFeatureDx12::CreateDenoiserContext()
     // Create DLSS-RR to FSR-RR input converter
     FSRDConvShader = std::make_unique<FSRDPreprocessor_Dx12>("FSRD Converter", Device);
 
+    // Stage timers (25 Sep)
+    for (auto& stage : _stageTimers)
+    {
+        if (!stage.timer)
+            stage.timer = std::make_unique<GpuTime_Dx12>(Device);
+    }
+
     if (!FSRDConvShader->IsInit())
         return false;
 
@@ -781,7 +788,10 @@ bool FSRDFeatureDx12::EvaluateInternal(ID3D12GraphicsCommandList* InCommandList,
         if (cfg.FfxDenoiserAbActive.value_or_default() && cfg.FfxDenoiserAbFrameIndexDoubled.value_or_default())
             denoiserDesc.frameIndex = (uint32_t) _frameCount;
 
-        isDenoiserReady = DispatchDenoiser(InCommandList, denoiserDesc);
+        {
+            ScopedGpuTime_Dx12 stageTime(StageTimerOf(StageDenoiser), InCommandList);
+            isDenoiserReady = DispatchDenoiser(InCommandList, denoiserDesc);
+        }
 
         if (!isDenoiserReady)
             return false;
@@ -794,8 +804,13 @@ bool FSRDFeatureDx12::EvaluateInternal(ID3D12GraphicsCommandList* InCommandList,
         TryGetNGXVoidPointer(inParams, NVSDK_NGX_Parameter_Color, compDesc.InRawColor);
         TryGetNGXVoidPointer(inParams, NVSDK_NGX_Parameter_DLSSD_ColorBeforeParticles, compDesc.InColorBeforeParticles);
 
-        if (!isFfxDebug && !FSRDConvShader->DispatchComposition(InCommandList, compDesc))
-            return false;
+        if (!isFfxDebug)
+        {
+            ScopedGpuTime_Dx12 stageTime(StageTimerOf(StageComposition), InCommandList);
+
+            if (!FSRDConvShader->DispatchComposition(InCommandList, compDesc))
+                return false;
+        }
 
         isDenoiserReady = true;
     }
@@ -827,7 +842,10 @@ bool FSRDFeatureDx12::EvaluateInternal(ID3D12GraphicsCommandList* InCommandList,
         if (isDenoiserReady)
             InParameters->Set(NVSDK_NGX_Parameter_Color, FSRDConvShader->GetCompositionOutput());
 
-        FFXFeatureDx12::EvaluateInternal(InCommandList, InParameters);
+        {
+            ScopedGpuTime_Dx12 stageTime(StageTimerOf(StageUpscale), InCommandList);
+            FFXFeatureDx12::EvaluateInternal(InCommandList, InParameters);
+        }
 
         if (isDenoiserReady)
             InParameters->Set(NVSDK_NGX_Parameter_Color, _convDesc.Resources.InColor);
@@ -1232,8 +1250,12 @@ bool FSRDFeatureDx12::ConvertDenoiserBuffers(ID3D12GraphicsCommandList* InComman
     LOG_DEBUG("Distpaching FSRD Input Converter");
 
     // Dispatch resource converter. Outputs are automatically transitioned for reading.
-    if (!FSRDConvShader->DispatchConversion(InCommandList, _convDesc))
-        return false;
+    {
+        ScopedGpuTime_Dx12 stageTime(StageTimerOf(StageConversion), InCommandList);
+
+        if (!FSRDConvShader->DispatchConversion(InCommandList, _convDesc))
+            return false;
+    }
 
     return true;
 }
@@ -1339,6 +1361,27 @@ void FSRDFeatureDx12::SetDefaultConfiguration()
              FSRD::ReturnCodeName(_sdkDefaultCodes[5]));
 }
 
+void FSRDFeatureDx12::ReadDetailedGpuTimes(void* commandQueue, std::vector<DetailedGpuTime>& detailedGpuTimes)
+{
+    FFXFeatureDx12::ReadDetailedGpuTimes(commandQueue, detailedGpuTimes);
+
+    // Stages that didn't run this frame (bypass views) have nothing new to read and keep their last value.
+    for (auto& stage : _stageTimers)
+    {
+        if (!stage.timer)
+            continue;
+
+        if (auto time = stage.timer->ReadGpuTime((ID3D12CommandQueue*) commandQueue); time && *time < 100.0)
+        {
+            stage.last = *time;
+            stage.avg = (stage.avg <= 0.0) ? *time : stage.avg + 0.05 * (*time - stage.avg);
+        }
+
+        if (stage.last > 0.0)
+            detailedGpuTimes.emplace_back(DetailedGpuTime { std::string("  ") + stage.name, stage.last, true });
+    }
+}
+
 void FSRDFeatureDx12::PublishDiagnostics(const NVSDK_NGX_Parameter& inParams, bool denoiseBypassed,
                                          bool upscaleBypassed)
 {
@@ -1399,6 +1442,12 @@ void FSRDFeatureDx12::PublishDiagnostics(const NVSDK_NGX_Parameter& inParams, bo
     frame.albedo16 = FSRDConvShader != nullptr && FSRDConvShader->IsAlbedo16();
     frame.messageCallback = _messageCallbackOk;
     frame.camMove = _lastCamMove;
+
+    for (size_t i = 0; i < _stageTimers.size(); i++)
+    {
+        frame.stageNames[i] = _stageTimers[i].name;
+        frame.stageMs[i] = (float) _stageTimers[i].avg;
+    }
     frame.camTurnDeg = _lastCamTurnDeg;
     frame.dispatches = _dispatchCount;
     frame.indexGaps = _indexGapCount;
