@@ -110,7 +110,12 @@ bool FeatureProvider_Dx12::GetFeature(Upscaler upscaler, UINT handleId, NVSDK_NG
     if (upscaler == Upscaler::DLSSD)
         upscaler = Upscaler::DLSS;
 
-    cfg.Dx12Upscaler = upscaler;
+    // 25 Sep: FSR-RR is never stored. It stands in for whatever SR backend the user chose (picked for
+    // Ray Reconstruction whenever that isn't DLSS), and the fork left the config alone for RR features.
+    // Storing it made the next plain upscaling request - the game switched from DLSS to FSR - create
+    // FSR-RR without any of the RR inputs: garbage, and the upscaler reported as not active.
+    if (upscaler != Upscaler::FSRD)
+        cfg.Dx12Upscaler = upscaler;
 
     return loaded;
 }
@@ -126,6 +131,14 @@ bool FeatureProvider_Dx12::ChangeFeature(Upscaler upscaler, ID3D12Device* device
         return false;
 
     const bool dlssOnNonCapable = !IdentifyGpu::getPrimaryGpu().dlssCapable && state.newBackend == Upscaler::DLSS;
+
+    // 25 Sep: a recreation request without a target (runtime error recovery, resolution change) keeps an
+    // FSR-RR feature FSR-RR. The config holds the SR backend, which can't serve a Ray Reconstruction handle.
+    if (state.newBackend == Upscaler::Reset && contextData->feature != nullptr &&
+        contextData->feature->GetUpscalerType() == Upscaler::FSRD)
+    {
+        state.newBackend = Upscaler::FSRD;
+    }
     if (state.newBackend == Upscaler::Reset || dlssOnNonCapable)
         state.newBackend = cfg.Dx12Upscaler.value_or_default();
 
