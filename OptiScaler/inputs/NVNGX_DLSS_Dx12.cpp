@@ -607,6 +607,14 @@ static Upscaler GetUpscalerBackend()
     if (Config::Instance()->Dx12Upscaler.has_value())
         upscaler = Config::Instance()->Dx12Upscaler.value();
 
+    // 25 Sep: FSR-RR only serves Ray Reconstruction requests. An ini saved while it was stored as the SR
+    // backend (builds from 22-25 Sep) still says "fsr-rr"; FSR-RR upscales with FFX, so use that.
+    if (upscaler == Upscaler::FSRD)
+    {
+        LOG_WARN("Dx12Upscaler is FSR-RR, which can't serve plain upscaling; using FFX");
+        upscaler = Upscaler::FFX;
+    }
+
     return upscaler;
 }
 

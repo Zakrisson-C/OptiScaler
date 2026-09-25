@@ -1330,6 +1330,7 @@ bool FSRDFeatureDx12::DispatchDenoiser(ID3D12GraphicsCommandList* InCommandList,
         if (result == FFX_API_RETURN_ERROR_RUNTIME_ERROR)
         {
             LOG_WARN("Trying to recover by recreating the feature");
+            state.newBackend = Upscaler::FSRD;
             state.changeBackend[Handle()->Id] = true;
         }
 
