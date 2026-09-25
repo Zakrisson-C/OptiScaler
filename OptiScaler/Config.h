@@ -465,7 +465,10 @@ class Config
     CustomOptional<float> FfxDenoiserGaussKernRelax { 0.0f };
 
     CustomOptional<float> FfxDenoiserCorrelationBias { 1.0f };
-    CustomOptional<float> FfxDenoiserFloorIsolation { 1.0f };
+    // 25 Sep: default 0 (was 1). With the denoiser's history working and the new tuning defaults, the floor's
+    // unfiltered share (no temporal accumulation, a-trous blur) cost more image quality than it protected; at 0 the
+    // floor passes don't run at all. Bias-masked pixels and the demodulation residual still bypass the denoiser.
+    CustomOptional<float> FfxDenoiserFloorIsolation { 0.0f };
 
     // Routes pixels flagged by the DLSS bias-current-color mask (particles, alpha layers,
     // animated / video textures) around the denoiser via the floor and skip signal.

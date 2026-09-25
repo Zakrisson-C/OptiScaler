@@ -4154,6 +4154,11 @@ void MenuCommon::RenderActiveUpscalerSettings(RenderMenuContext& ctx)
                 if (float v = config->FfxDenoiserFloorIsolation.value_or_default();
                     ImGui::SliderFloat("Floor Isolation", &v, 0, 1))
                     config->FfxDenoiserFloorIsolation = v;
+                ShowHelpMarker("Share of the floor (an edge-aware blur of the raw colour)\n"
+                               "routed around the denoiser. 0 = default: the floor passes\n"
+                               "don't run and the floor sliders below do nothing. Bias-\n"
+                               "masked pixels and what demodulation can't carry still\n"
+                               "bypass the denoiser at 0.");
 
                 if (float v = config->FfxDenoiserBiasMaskStrength.value_or_default();
                     ImGui::SliderFloat("Bias Mask Strength", &v, 0, 1))
