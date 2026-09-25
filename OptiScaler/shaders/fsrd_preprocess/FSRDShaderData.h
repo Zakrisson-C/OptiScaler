@@ -11,7 +11,8 @@ constexpr UINT kBackBufferCount = std::max(3 * (kPasses + 1), 1u);
 enum class Flags : uint32_t
 {
     None = 0,
-    LinearDepth = (1 << 0)
+    LinearDepth = (1 << 0),
+    DepthOnly = (1 << 1) // 25 Sep: floor off, write linear depth only
 };
 
 struct alignas(16) Constants
