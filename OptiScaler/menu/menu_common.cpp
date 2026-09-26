@@ -2561,6 +2561,20 @@ const char* FsrdLegendText(const char* view)
                                "while you move and turn." },
         { "InSSSGuide", "The game's subsurface scattering guide: where its SSS pass changed the colour. Green = "
                         "added light, red = removed (full at 50% of the pixel); dim grey = no SSS material." },
+        { "SssSeparated", "The colour the denoiser works from once SSS Separation takes the SSS contribution out "
+                          "(needs SSS Separation above 0). On skin, compare with RawColor: fine per-pixel noise "
+                          "here where RawColor shows blotches means the guide is read correctly." },
+        { "SssDelta", "The SSS contribution routed around the denoiser, after the history. Green = light the SSS "
+                      "blur added, red = light it took away (full at 50% of the pixel); dim grey = no SSS "
+                      "material. Should look smooth and steady on a still face; boiling here = history too short "
+                      "(lower SSS History)." },
+        { "TextureLeakSpecular", "How much of the specular albedo's pattern is still in the specular lighting sent "
+                                 "to the denoiser (log-log slope over 7x7 on one surface). Grey = clean, red = "
+                                 "texture in the lighting (full red = not demodulated at all), yellow = beyond "
+                                 "that, blue = inverse imprint (light the surface didn't reflect, divided by its "
+                                 "albedo). Black = no texture there to leak. Noisy per frame; read the average." },
+        { "TextureLeakDiffuse", "Same as TextureLeakSpecular for the diffuse lobe: diffuse lighting against diffuse "
+                                "albedo. Liveries, graffiti and road markings are the places to look." },
         { "OutSpecHitDist", "Specular hit distance as sent to the denoiser, after the gate, Hit Distance Scale and "
                             "the reconstruction switch. Same colours as InSpecHitDist: magenta = 0, Turbo on "
                             "log2(1 + d) over 0..127." },
@@ -2890,26 +2904,29 @@ std::string FsrdBuildReport(Config* config, State& state, const FSRD::ProbeReado
                      FsrdNum(config->FfxDenoiserMaxRadiance.value_or_default()),
                      FsrdNum(config->FfxDenoiserRadianceClip.value_or_default()),
                      FsrdNum(config->FfxDenoiserGaussKernRelax.value_or_default())));
-    Line(
-        std::format("Shim sliders: correlation bias {}, floor isolation {}, bias mask {}, detail boost {}, "
-                    "normal sharpness {}, albedo guide {}, luma symmetry {}, grazing {}, soft min {}, roughness "
-                    "exponent {}, hit distance scale {}, spec guard {} (fade {}..{}), split prior {}, firefly clamp {}",
-                    FsrdNum(config->FfxDenoiserCorrelationBias.value_or_default()),
-                    FsrdNum(config->FfxDenoiserFloorIsolation.value_or_default()),
-                    FsrdNum(config->FfxDenoiserBiasMaskStrength.value_or_default()),
-                    FsrdNum(config->FfxDenoiserFloorDetailBoost.value_or_default()),
-                    FsrdNum(config->FfxDenoiserFloorNormalSharpness.value_or_default()),
-                    FsrdNum(config->FfxDenoiserFloorAlbedoGuide.value_or_default()),
-                    FsrdNum(config->FfxDenoiserFloorLumSymmetry.value_or_default()),
-                    FsrdNum(config->FfxDenoiserFloorGrazingSharpness.value_or_default()),
-                    FsrdNum(config->FfxDenoiserFloorSoftMin.value_or_default()),
-                    FsrdNum(config->FfxDenoiserRoughnessExponent.value_or_default()),
-                    FsrdNum(config->FfxDenoiserHitDistScale.value_or_default()),
-                    FsrdNum(config->FfxDenoiserFloorSpecGuard.value_or_default()),
-                    FsrdNum(config->FfxDenoiserFloorSpecGuardFadeStart.value_or_default()),
-                    FsrdNum(config->FfxDenoiserFloorSpecGuardFadeEnd.value_or_default()),
-                    FsrdNum(config->FfxDenoiserSplitPrior.value_or_default()),
-                    FsrdNum(config->FfxDenoiserFireflyClamp.value_or_default())));
+    Line(std::format(
+        "Shim sliders: correlation bias {}, floor isolation {}, bias mask {}, detail boost {}, "
+        "normal sharpness {}, albedo guide {}, luma symmetry {}, grazing {}, soft min {}, roughness "
+        "exponent {}, hit distance scale {}, spec guard {} (fade {}..{}), split prior {}, firefly clamp {}, "
+        "SSS separation {}, SSS history {}",
+        FsrdNum(config->FfxDenoiserCorrelationBias.value_or_default()),
+        FsrdNum(config->FfxDenoiserFloorIsolation.value_or_default()),
+        FsrdNum(config->FfxDenoiserBiasMaskStrength.value_or_default()),
+        FsrdNum(config->FfxDenoiserFloorDetailBoost.value_or_default()),
+        FsrdNum(config->FfxDenoiserFloorNormalSharpness.value_or_default()),
+        FsrdNum(config->FfxDenoiserFloorAlbedoGuide.value_or_default()),
+        FsrdNum(config->FfxDenoiserFloorLumSymmetry.value_or_default()),
+        FsrdNum(config->FfxDenoiserFloorGrazingSharpness.value_or_default()),
+        FsrdNum(config->FfxDenoiserFloorSoftMin.value_or_default()),
+        FsrdNum(config->FfxDenoiserRoughnessExponent.value_or_default()),
+        FsrdNum(config->FfxDenoiserHitDistScale.value_or_default()),
+        FsrdNum(config->FfxDenoiserFloorSpecGuard.value_or_default()),
+        FsrdNum(config->FfxDenoiserFloorSpecGuardFadeStart.value_or_default()),
+        FsrdNum(config->FfxDenoiserFloorSpecGuardFadeEnd.value_or_default()),
+        FsrdNum(config->FfxDenoiserSplitPrior.value_or_default()),
+        FsrdNum(config->FfxDenoiserFireflyClamp.value_or_default()),
+        FsrdNum(config->FfxDenoiserSssSeparation.value_or_default()),
+        FsrdNum(config->FfxDenoiserSssHistoryAlpha.value_or_default())));
     Line(std::format("Buckets: diffuse as direct {}, specular as direct {}; flip view z {}",
                      config->FfxDenoiserDiffuseAsDirect.value_or_default() ? "on" : "off",
                      config->FfxDenoiserSpecularAsDirect.value_or_default() ? "on" : "off",
@@ -4319,6 +4336,24 @@ void MenuCommon::RenderActiveUpscalerSettings(RenderMenuContext& ctx)
                                "features two pixels wide are left alone. Lower\n"
                                "= more aggressive; try 8, then 4. 0 = off. The\n"
                                "FireflyClamp view shows what it removes.");
+
+                if (float v = config->FfxDenoiserSssSeparation.value_or_default();
+                    ImGui::SliderFloat("SSS Separation", &v, 0, 1))
+                    config->FfxDenoiserSssSeparation = v;
+                ShowHelpMarker("Uses the game's SSS guide to take the subsurface\n"
+                               "scattering blur out of skin before denoising: the\n"
+                               "denoiser gets per-pixel noise instead of blotches,\n"
+                               "and the SSS contribution is averaged over frames\n"
+                               "and added back after. 1 = all of it, 0 = off.\n"
+                               "Views: SssSeparated, SssDelta, InSSSGuide.");
+
+                if (float v = config->FfxDenoiserSssHistoryAlpha.value_or_default();
+                    ImGui::SliderFloat("SSS History", &v, 0.02f, 1, "%.3f", ImGuiSliderFlags_Logarithmic))
+                    config->FfxDenoiserSssHistoryAlpha = v;
+                ShowHelpMarker("Weight of the current frame in the SSS average.\n"
+                               "Lower = smoother skin, slower to follow lighting\n"
+                               "changes (a lag on the SSS glow only). 1 = no\n"
+                               "averaging. Default 0.1.");
 
                 // Pixel probe, A/B switches for the audit findings, diagnostics (24 Sep)
                 RenderFsrdDebugTools(ctx);

@@ -4,8 +4,8 @@
 #define MainRS \
     "RootFlags(0), " \
     "CBV(b0), " \
-    "DescriptorTable(SRV(t0, numDescriptors = 12), visibility = SHADER_VISIBILITY_ALL), " \
-    "DescriptorTable(UAV(u0, numDescriptors = 8), visibility = SHADER_VISIBILITY_ALL), "
+    "DescriptorTable(SRV(t0, numDescriptors = 13), visibility = SHADER_VISIBILITY_ALL), " \
+    "DescriptorTable(UAV(u0, numDescriptors = 9), visibility = SHADER_VISIBILITY_ALL), "
 
 // Dispatch config
 #define THREAD_GROUP_SIZE_X     8
@@ -35,6 +35,7 @@ static const uint2 s_ThreadGroupSize = uint2(THREAD_GROUP_SIZE_X, THREAD_GROUP_S
 #define FLAGS_AB_CAMERA_DEPTH_DELTA     (1 << 12) // Old camera-only depth delta (no object-motion delta)
 #define FLAGS_AB_HITDIST_RECON          (1 << 13) // Fill missing (<= 0) spec hit distances from neighbours
 #define FLAGS_AB_SPEC_FOLLOW_SURFACE    (1 << 14) // Hit distance -> 0 on self-moving pixels (reflections ride the surface)
+#define FLAGS_SSS_RESET                 (1 << 15) // 26 Sep: SSS history invalid this frame (just switched on / resized)
 
 // Debug Flags
 #define FLAGS_DEBUG                     (1 << 16)
@@ -84,6 +85,10 @@ static const uint2 s_ThreadGroupSize = uint2(THREAD_GROUP_SIZE_X, THREAD_GROUP_S
 #define FLAGS_DEBUG_OUT_SPEC_HIT_DIST   (28 << 17 | FLAGS_DEBUG)
 // 25 Sep. The game's SSS guide: where its screen-space subsurface scattering changed the colour.
 #define FLAGS_DEBUG_IN_SSS_GUIDE        (29 << 17 | FLAGS_DEBUG)
+// 26 Sep. SSS separation: the colour the denoiser works from, and the SSS contribution routed around it.
+#define FLAGS_DEBUG_SSS_SEPARATED       (30 << 17 | FLAGS_DEBUG)
+#define FLAGS_DEBUG_SSS_DELTA           (31 << 17 | FLAGS_DEBUG)
+// 32/33 (texture leak, specular / diffuse) are drawn by FSRDLeak.hlsl, not here.
 
 // DLSS-RR Inputs
 Texture2D<half3> InColor : register(t0); // RGB - NVSDK_NGX_Parameter_Color
@@ -102,9 +107,13 @@ Texture2D<half4> InFloorColor : register(t9);
 // FLAGS_AB_CAMERA_DEPTH_DELTA clear (the default since 25 Sep).
 Texture2D<float> InPrevLinearDepth : register(t10);
 
-// DLSS-RR subsurface scattering guide (25 Sep): luminance(colour after SSS - colour before SSS), 0 on
-// pixels without an SSS material (Streamline DLSS-RR guide). Optional; a null SRV reads 0. Debug view only.
+// DLSS-RR subsurface scattering guide (25 Sep): luminance(colour after SSS - colour before SSS) with
+// luminance = (r + 2g + b) / 4, 0 on pixels without an SSS material (Streamline DLSS-RR guide). Optional;
+// a null SRV reads 0. Used by the SSS separation (26 Sep) and the InSSSGuide view.
 Texture2D<float> InSSSGuide : register(t11);
+
+// SSS history (26 Sep): last frame's accumulated SSS contribution (rgb) and linear depth (a, 0 = no SSS).
+Texture2D<half4> InSssHistory : register(t12);
 
 // FSR-RR - ffxDispatchDescDenoiserIndirectSpecular / ffxDispatchDescDenoiserIndirectDiffuse
 // (transplant, 22 Sep: Mode 1's combined-signal shape removed, no successor in denoiser 1.2)
@@ -127,6 +136,9 @@ RWTexture2D<half4> OutSkipSignal : register(u6);
 // Read back on the CPU and shown in the menu, so values are exact rather than read off a
 // colour map through the game's tonemapper.
 RWTexture2D<float4> OutProbe : register(u7);
+
+// SSS history (26 Sep), this frame's. Written only while SSS separation is on.
+RWTexture2D<half4> OutSssHistory : register(u8);
 
 cbuffer CB_Packing : register(b0)
 {
@@ -184,10 +196,17 @@ cbuffer CB_Packing : register(b0)
     // Firefly clamp (25 Sep): a pixel whose lighting exceeds this many times the brightest of its
     // 8 neighbours is scaled down to that limit. 0 = off (bit-identical).
     float FireflyClampK;
-    float _Padding3;
+
+    // SSS separation (26 Sep): share of the SSS contribution taken out of the denoiser's input and
+    // routed around it. 0 = off (bit-identical).
+    float SssSeparation;
 
     // Current (unjittered) view to clip, for the MotionConsistency view and probe row (24 Sep).
     float4x4 ProjMatrix;
+
+    // SSS separation (26 Sep): weight of the current frame in the SSS history. 1 = no history.
+    float SssHistoryAlpha;
+    float3 _Padding4;
 };
 
 bool IsSet(uint mask) { return (Flags & mask) == mask; }
@@ -228,6 +247,54 @@ uint GetDebugMode() { return (Flags & FLAGS_DEBUG_MODE_MASK); }
 // demodulated signal in a sane range; whatever energy that costs is recovered by the
 // existing residual path, which folds it into the skip signal.
 static const float kMinReflectance = 8e-3f;
+
+// SSS history (26 Sep). Exponential average of the SSS contribution along the game's motion vectors.
+// The history's alpha holds each pixel's linear depth (0 = no SSS material there), which doubles as the
+// disocclusion test: a tap only counts if it was SSS last frame and sits within 10% of this depth.
+// Writes this frame's history for every pixel, so non-SSS pixels clear their slot.
+float3 AccumulateSss(const int2 px, const float3 deltaNow, const bool isSss)
+{
+    float3 result = deltaNow;
+    const float depth = abs(InDepth[px]);
+
+    [branch]
+    if (isSss && SssHistoryAlpha < 1.0f && !IsSet(FLAGS_SSS_RESET))
+    {
+        const float2 pixelUV = (float2(px) + 0.5f) * DstTexSize.zw;
+        const float2 prevUV = pixelUV + InMotionVectors[px].rg;
+
+        if (all(prevUV >= 0.0f) && all(prevUV < 1.0f))
+        {
+            // Bilinear, by hand: no sampler in this root signature, and the depth test is per tap.
+            const float2 prevPos = prevUV * DstTexSize.xy - 0.5f;
+            const int2 base = int2(floor(prevPos));
+            const float2 f = prevPos - float2(base);
+            const int2 maxPx = int2(DstTexSize.xy) - 1;
+
+            float3 sum = 0.0f;
+            float weightSum = 0.0f;
+
+            [unroll]
+            for (int i = 0; i < 4; i++)
+            {
+                const int2 offset = int2(i & 1, i >> 1);
+                const float4 history = InSssHistory[clamp(base + offset, int2(0, 0), maxPx)];
+                const float bilinear = ((offset.x != 0) ? f.x : 1.0f - f.x) * ((offset.y != 0) ? f.y : 1.0f - f.y);
+                const bool sameSurface = (history.a > 0.0f) && (abs(history.a - depth) < 0.1f * depth);
+                const float w = sameSurface ? bilinear : 0.0f;
+
+                sum += w * history.rgb;
+                weightSum += w;
+            }
+
+            if (weightSum > 0.25f)
+                result = lerp(sum / weightSum, deltaNow, SssHistoryAlpha);
+        }
+    }
+
+    OutSssHistory[px] = half4(GetSafeFP16(result), isSss ? depth : 0.0f);
+    return result;
+}
 
 // Firefly clamp (25 Sep).
 //
@@ -398,6 +465,39 @@ void CSMain(uint3 groupID : SV_GroupID, uint3 gtID : SV_GroupThreadID)
         fireflyScale = lerp(GetFireflyScale(px), 1.0f, emissiveScore);
         rawColor *= fireflyScale;
     }
+
+    // Subsurface scattering separation (26 Sep).
+    //
+    // Cyberpunk hands over skin after its screen-space SSS blur, which turns per-pixel path tracing
+    // noise into blotches: noise at the scale of real detail, which the denoiser keeps. The DLSS-RR SSS
+    // guide is luminance(after SSS - before SSS) with luminance = (r + 2g + b) / 4, so it pins the
+    // luminance before the blur exactly: lum(C) - guide. With the chroma taken from the composite, the
+    // SSS contribution is C * guide / lum(C) and the colour before the blur is the rest. The denoiser
+    // gets the colour before the blur (ordinary per-pixel noise, which it handles); the SSS contribution
+    // goes around it through the skip signal. That contribution is as noisy as the input (the blur of
+    // the noise minus the noise) and lives at the same spatial scale as the effect itself, so a spatial
+    // filter can't separate the two; it is averaged over frames instead (AccumulateSss).
+    const float3 rawColorFull = rawColor;
+    const float sssGuide = (SssSeparation > 0.0f) ? InSSSGuide[px] : 0.0f;
+    float3 sssDelta = 0.0f;
+
+    [branch]
+    if (SssSeparation > 0.0f)
+    {
+        const bool isSss = (sssGuide != 0.0f);
+        float3 sssDeltaNow = 0.0f;
+
+        if (isSss)
+        {
+            const float lum4 = (inputColor.r + 2.0f * inputColor.g + inputColor.b) * 0.25f;
+            const float ratio = clamp(sssGuide / max(lum4, 1e-4f), -4.0f, 1.0f) * SssSeparation;
+            sssDeltaNow = rawColor * ratio;
+            rawColor -= sssDeltaNow;
+        }
+
+        sssDelta = AccumulateSss(px, sssDeltaNow, isSss);
+    }
+
     float4 floorColor = InFloorColor[px];
     const float rawLuma = GetLuminance(rawColor);
     const float floorLuma = GetLuminance(floorColor.rgb);
@@ -694,6 +794,9 @@ void CSMain(uint3 groupID : SV_GroupID, uint3 gtID : SV_GroupThreadID)
         // came out of the a-trous filter, before isolation, spec guard, bias mask, min and the
         // residual. The composition uses it as the skip luminance in the SSIM reference that
         // drives the Correlation Bias raw blend.
+        // SSS separation (26 Sep): the SSS contribution goes around the denoiser.
+        floorColor.rgb += sssDelta;
+
         if (IsSet(FLAGS_AB_SKIP_ALPHA_FINAL))
             floorColor.a = GetLuminance(floorColor.rgb);
 
@@ -766,9 +869,29 @@ void CSMain(uint3 groupID : SV_GroupID, uint3 gtID : SV_GroupThreadID)
                 case FLAGS_DEBUG_IN_SSS_GUIDE:
                 {
                     const float sss = InSSSGuide[px];
-                    const float relative = sss / max(rawLuma, 1e-3f);
+                    const float fullLuma = GetLuminance(rawColorFull);
+                    const float relative = sss / max(fullLuma, 1e-3f);
                     debugColor = (sss != 0.0f) ? VisualizeSignedDiff(relative, 2.0f) + 0.1f
-                                               : 0.25f * saturate(rawLuma).xxx;
+                                               : 0.25f * saturate(fullLuma).xxx;
+                    break;
+                }
+
+                // 26 Sep. The colour the denoiser works from once the SSS contribution is taken out (needs
+                // SSS Separation > 0). On skin: fine per-pixel noise here where RawColor shows blotches means
+                // the guide reads the way the DLSS-RR spec describes it.
+                case FLAGS_DEBUG_SSS_SEPARATED:
+                    debugColor = rawColor;
+                    break;
+
+                // 26 Sep. The SSS contribution routed around the denoiser, after the history: green = light
+                // the SSS blur added, red = light it took away, relative to the pixel (full at 50%), over a
+                // dim grey copy of the image where there is no SSS material.
+                case FLAGS_DEBUG_SSS_DELTA:
+                {
+                    const float fullLuma = GetLuminance(rawColorFull);
+                    const float relative = GetLuminance(sssDelta) / max(fullLuma, 1e-3f);
+                    debugColor = (sssGuide != 0.0f) ? VisualizeSignedDiff(relative, 2.0f) + 0.1f
+                                                    : 0.25f * saturate(fullLuma).xxx;
                     break;
                 }
 
@@ -792,7 +915,7 @@ void CSMain(uint3 groupID : SV_GroupID, uint3 gtID : SV_GroupThreadID)
                     // the skip signal. Blue = travelling around the denoiser blurred by
                     // the floor, red = being denoised. Reflections and shadows reading
                     // blue is the floor capturing lighting it should have passed through.
-                    const float rawLum = GetLuminance(rawColor);
+                    const float rawLum = GetLuminance(rawColorFull);
                     const float denLum = GetLuminance(denoiserColor);
                     debugColor = TurboColormap(saturate(denLum * rcp(max(rawLum, 1e-3f))));
                     break;
@@ -911,14 +1034,14 @@ void CSMain(uint3 groupID : SV_GroupID, uint3 gtID : SV_GroupThreadID)
         const float skippedAlpha = IsSet(FLAGS_AB_SKIPPED_INACTIVE) ? -1.0f : 0.0f;
         OutSignal1[px] = half4(0.0f, 0.0f, 0.0f, skippedAlpha);
         OutSignal2[px] = half4(0.0f, 0.0f, 0.0f, skippedAlpha);
-        OutSkipSignal[px] = half4(rawColor, rawLuma);
+        OutSkipSignal[px] = half4(rawColor + sssDelta, rawLuma);
 
         PROBE_WRITE(PROBE_HIT_DIST, float4(InSpecHitDist[px], 0.0f, 0.0f, 1.0f));
         PROBE_WRITE(PROBE_GATE_TERMS, float4(0.0f, 0.0f, 0.0f, 0.0f));
         PROBE_WRITE(PROBE_DENOISER_COLOR, float4(denoiserColor, 0.0f));
         PROBE_WRITE(PROBE_DEMOD_SPEC, float4(0.0f, 0.0f, 0.0f, 0.0f));
         PROBE_WRITE(PROBE_DEMOD_DIFF, float4(0.0f, 0.0f, 0.0f, skippedAlpha));
-        PROBE_WRITE(PROBE_SKIP_OUT, float4(rawColor, rawLuma));
+        PROBE_WRITE(PROBE_SKIP_OUT, float4(rawColor + sssDelta, rawLuma));
         PROBE_WRITE(PROBE_GEOMETRY, float4(depthDelta, 0.0f, 0.0f, 0.0f));
     }
 }

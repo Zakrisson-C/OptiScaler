@@ -253,6 +253,10 @@ enum class DebugModes : uint64_t
     FireflyClamp = FSRDConvFlags::DebugFireflyClamp,           // 25 Sep
     OutSpecHitDist = FSRDConvFlags::DebugOutSpecHitDist,       // 25 Sep
     InSSSGuide = FSRDConvFlags::DebugInSSSGuide,               // 25 Sep
+    SssSeparated = FSRDConvFlags::DebugSssSeparated,           // 26 Sep
+    SssDelta = FSRDConvFlags::DebugSssDelta,                   // 26 Sep
+    TextureLeakSpecular = FSRDConvFlags::DebugLeakSpecular,    // 26 Sep
+    TextureLeakDiffuse = FSRDConvFlags::DebugLeakDiffuse,      // 26 Sep
 
     CompositionDebugOffset = 16u,
     CompositionDebug = (uint64_t) FSRDCompFlags::Debug << CompositionDebugOffset,
@@ -330,6 +334,10 @@ constexpr auto kDebugModes = std::to_array<ModeNamePair>({
     { "FireflyClamp", (uint64_t) DebugModes::FireflyClamp },
     { "OutSpecHitDist", (uint64_t) DebugModes::OutSpecHitDist },
     { "InSSSGuide", (uint64_t) DebugModes::InSSSGuide },
+    { "SssSeparated", (uint64_t) DebugModes::SssSeparated },
+    { "SssDelta", (uint64_t) DebugModes::SssDelta },
+    { "TextureLeakSpecular", (uint64_t) DebugModes::TextureLeakSpecular },
+    { "TextureLeakDiffuse", (uint64_t) DebugModes::TextureLeakDiffuse },
 
     { "Signal1", (uint64_t) DebugModes::Signal1 },
     { "Signal2", (uint64_t) DebugModes::Signal2 },
@@ -919,7 +927,10 @@ bool FSRDFeatureDx12::EvaluateInternal(ID3D12GraphicsCommandList* InCommandList,
         TryGetNGXVoidPointer(inParams, NVSDK_NGX_Parameter_DLSSD_ColorBeforeParticles, compDesc.InColorBeforeParticles);
         compDesc.InSSSGuide = _convDesc.InSSSGuide;
 
-        if (cfg.FfxDenoiserAbActive.value_or_default() && cfg.FfxDenoiserAbSssNoRawBlend.value_or_default())
+        // 26 Sep: with SSS separation on, the raw colour's SSS blotches are exactly what was taken out, so
+        // the Correlation Bias raw blend stays off on SSS pixels too.
+        if ((cfg.FfxDenoiserAbActive.value_or_default() && cfg.FfxDenoiserAbSssNoRawBlend.value_or_default()) ||
+            _convDesc.SssSeparation > 0.0f)
             compDesc.Flags |= (uint32_t) FSRDCompFlags::SssNoRawBlend;
 
         if (!isFfxDebug)
@@ -1305,6 +1316,8 @@ bool FSRDFeatureDx12::ConvertDenoiserBuffers(ID3D12GraphicsCommandList* InComman
     _convDesc.FloorSpecGuardFadeStart = cfg.FfxDenoiserFloorSpecGuardFadeStart.value_or_default();
     _convDesc.FloorSpecGuardFadeEnd = cfg.FfxDenoiserFloorSpecGuardFadeEnd.value_or_default();
     _convDesc.FireflyClampK = cfg.FfxDenoiserFireflyClamp.value_or_default();
+    _convDesc.SssSeparation = std::clamp(cfg.FfxDenoiserSssSeparation.value_or_default(), 0.0f, 1.0f);
+    _convDesc.SssHistoryAlpha = cfg.FfxDenoiserSssHistoryAlpha.value_or_default();
     _convDesc.SplitPriorStrength = cfg.FfxDenoiserSplitPrior.value_or_default();
     _convDesc.RoughnessProbe = cfg.FfxDenoiserRoughnessProbe.value_or_default();
 

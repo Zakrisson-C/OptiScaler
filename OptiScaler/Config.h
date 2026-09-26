@@ -506,6 +506,13 @@ class Config
     // albedo-divided lighting) is scaled down to that limit. 0 = off.
     CustomOptional<float> FfxDenoiserFireflyClamp { 0.0f };
 
+    // SSS separation (26 Sep): share of the SSS contribution (from the game's SSS guide) taken out of the
+    // denoiser's input and routed around it, averaged over frames. 0 = off.
+    CustomOptional<float> FfxDenoiserSssSeparation { 0.0f };
+
+    // Weight of the current frame in the SSS history. Lower = smoother, slower to follow lighting changes.
+    CustomOptional<float> FfxDenoiserSssHistoryAlpha { 0.1f };
+
     // Diagnostics and input-encoding probes. Requires a denoiser context recreate.
     CustomOptional<bool> FfxDenoiserFsrDebugViews { false };
 

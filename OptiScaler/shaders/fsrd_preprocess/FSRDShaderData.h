@@ -178,18 +178,26 @@ struct alignas(16) Constants
 
     // Firefly clamp (25 Sep): max ratio to the brightest neighbour. 0 = off (bit-identical).
     float FireflyClampK;
-    float _Padding3;
+
+    // SSS separation (26 Sep): share of the SSS contribution routed around the denoiser. 0 = off.
+    float SssSeparation;
 
     // Current view to clip, for the motion consistency check (24 Sep). Debug view / probe only.
     XMFLOAT4X4 ProjMatrix;
+
+    // SSS separation (26 Sep): weight of the current frame in the SSS history. 1 = no history.
+    float SssHistoryAlpha;
+    float _Padding4[3];
 };
 
 // Matches the cbuffer layout DXC reports for CB_Packing in FSRDInputConv.hlsl.
-static_assert(sizeof(Constants) == 352, "Conversion::Constants out of sync with CB_Packing");
+static_assert(sizeof(Constants) == 368, "Conversion::Constants out of sync with CB_Packing");
 static_assert(offsetof(Constants, ProbeCenterX) == 256, "Conversion::Constants out of sync with CB_Packing");
 static_assert(offsetof(Constants, FloorSpecGuardFadeStart) == 272, "Conversion::Constants out of sync with CB_Packing");
 static_assert(offsetof(Constants, FireflyClampK) == 280, "Conversion::Constants out of sync with CB_Packing");
+static_assert(offsetof(Constants, SssSeparation) == 284, "Conversion::Constants out of sync with CB_Packing");
 static_assert(offsetof(Constants, ProjMatrix) == 288, "Conversion::Constants out of sync with CB_Packing");
+static_assert(offsetof(Constants, SssHistoryAlpha) == 352, "Conversion::Constants out of sync with CB_Packing");
 
 union Input
 {
@@ -208,7 +216,8 @@ union Input
 
         ID3D12Resource* InBlurColor;
         ID3D12Resource* InPrevLinearDepth; // t10, last frame's linear depth (24 Sep; was the unused InEdgeGuide)
-        ID3D12Resource* InSSSGuide;        // t11, DLSSD SSS guide (25 Sep, optional, debug view only)
+        ID3D12Resource* InSSSGuide;        // t11, DLSSD SSS guide (25 Sep, optional)
+        ID3D12Resource* InSssHistory;      // t12, last frame's SSS history (26 Sep)
     };
 
     // The number of D3D12 resources in the struct
@@ -269,9 +278,54 @@ union Output
 };
 
 // UAVs bound to the packing shader: the Output resources above (u0-u6), then the pixel probe
-// texture (u7, 24 Sep). The probe is kept out of Output because Output is the denoiser's input set.
-constexpr UINT kUavCount = Output::kCount + 1;
+// texture (u7, 24 Sep) and this frame's SSS history (u8, 26 Sep). Both are kept out of Output
+// because Output is the denoiser's input set.
+constexpr UINT kUavCount = Output::kCount + 2;
+constexpr UINT kProbeUav = Output::kCount;
+constexpr UINT kSssHistoryUav = Output::kCount + 1;
 } // namespace Conversion
+
+// Texture leak views (26 Sep, FSRDLeak.hlsl): debug only, one dispatch on frames that show one.
+namespace Leak
+{
+constexpr UINT kBackBufferCount = 3;
+
+enum class Flags : uint32_t
+{
+    None = 0,
+    Diffuse = (1 << 0) // diffuse lobe; clear = specular
+};
+
+struct alignas(16) Constants
+{
+    XMFLOAT4 DstTexSize; // XY = size, ZW = 1 / size
+    uint32_t Flags;
+    float _Padding[3];
+};
+
+static_assert(sizeof(Constants) == 32, "Leak::Constants out of sync with CB_Leak");
+
+union Input
+{
+    struct Data
+    {
+        ID3D12Resource* InSpecRadiance;
+        ID3D12Resource* InDiffRadiance;
+        ID3D12Resource* InSpecAlbedo;
+        ID3D12Resource* InDiffAlbedo;
+        ID3D12Resource* InLinearDepth;
+        ID3D12Resource* InNormals;
+    };
+
+    static constexpr uint32_t kCount = sizeof(Data) / sizeof(ID3D12Resource*);
+
+    Data Resources;
+
+    ID3D12Resource* AsArray[kCount];
+};
+
+constexpr UINT kOutputCount = 1;
+} // namespace Leak
 
 namespace Composition
 {

@@ -7,6 +7,7 @@
 #include "precompile/FSRDFloorSeed_Shader.h"
 #include "precompile/FSRDFloor_Shader.h"
 #include "precompile/FSRDOutputComp_Shader.h"
+#include "precompile/FSRDLeak_Shader.h"
 
 #include "dx12/ffx_api_dx12.h"
 #include "fsr-rr/ffx_denoiser.h"
@@ -63,6 +64,9 @@ constexpr DXGI_FORMAT Albedo16 = DXGI_FORMAT_R16G16B16A16_FLOAT;
 
 // Pixel probe records (see FSRDDiagnostics.h)
 constexpr DXGI_FORMAT Probe = DXGI_FORMAT_R32G32B32A32_FLOAT;
+
+// SSS separation history (26 Sep): accumulated SSS contribution rgb, linear depth a
+constexpr DXGI_FORMAT SssHistory = DXGI_FORMAT_R16G16B16A16_FLOAT;
 } // namespace FSRDFormats
 
 namespace FSRDProbe
@@ -273,6 +277,7 @@ struct FSRDPreprocessor_Dx12::Impl
     ComputeState m_floorFilterShader;
     ComputeState m_convShader;
     ComputeState m_compShader;
+    ComputeState m_leakShader; // texture leak views (26 Sep), debug only
 
     UINT m_maxWidth = 0;
     UINT m_maxHeight = 0;
@@ -287,6 +292,12 @@ struct FSRDPreprocessor_Dx12::Impl
 
     // Floor filter
     ID3D12Resource* m_smoothFloor;
+
+    // SSS separation history (26 Sep): ping-pong pair, rgb = accumulated SSS contribution, a = linear
+    // depth (0 = no SSS material). m_sssRead is last frame's.
+    ComPtr<ID3D12Resource> m_sssHistory[2];
+    uint32_t m_sssRead = 0;
+    bool m_sssWasActive = false; // false = history invalid, the next active frame starts it afresh
 
     // A/B, audit finding 3: albedo textures created as RGBA16_FLOAT
     bool m_albedo16 = false;
@@ -326,7 +337,8 @@ struct FSRDPreprocessor_Dx12::Impl
     float m_probeBoxMeanSq[FSRD::Probe::BoxCount][4] = {};
 
     void Initialize(std::span<const byte> blSeedByteCode, std::span<const byte> blPyramidByteCode,
-                    std::span<const byte> convByteCode, std::span<const byte> compByteCode)
+                    std::span<const byte> convByteCode, std::span<const byte> compByteCode,
+                    std::span<const byte> leakByteCode)
     {
         ScopedSkipHeapCapture skipHeapCapture {};
 
@@ -342,6 +354,8 @@ struct FSRDPreprocessor_Dx12::Impl
                                 Conversion::kUavCount, L"FSRD_Conv_Constants", Conversion::kBackBufferCount);
         m_compShader.Initialize(m_pDev, compByteCode, sizeof(Composition::Constants), Composition::Input::kCount,
                                 Composition::kOutputCount, L"FSRD_Comp_Constants", Composition::kBackBufferCount);
+        m_leakShader.Initialize(m_pDev, leakByteCode, sizeof(Leak::Constants), Leak::Input::kCount, Leak::kOutputCount,
+                                L"FSRD_Leak_Constants", Leak::kBackBufferCount);
 
         LOG_DEBUG("FSRD interop shaders and resources initialized.");
     }
@@ -383,6 +397,12 @@ struct FSRDPreprocessor_Dx12::Impl
         // so these are always allocated (transplant plan §6e/6f).
         outResources.SpecRadiance = CreateTex(FSRDFormats::SpecRadiance, L"FSR_Conv_SpecRadiance");
         outResources.DiffRadiance = CreateTex(FSRDFormats::DiffRadiance, L"FSR_Conv_DiffRadiance");
+
+        // SSS separation history (26 Sep)
+        m_sssHistory[0] = CreateTex(FSRDFormats::SssHistory, L"FSR_Conv_SssHistoryA");
+        m_sssHistory[1] = CreateTex(FSRDFormats::SssHistory, L"FSR_Conv_SssHistoryB");
+        m_sssRead = 0;
+        m_sssWasActive = false;
     }
 
     // depthOnly (25 Sep): the floor is off, so only the linear depth is written; no median, no gradient, and
@@ -531,11 +551,28 @@ struct FSRDPreprocessor_Dx12::Impl
                                                 .FloorSpecGuardFadeStart = desc.FloorSpecGuardFadeStart,
                                                 .FloorSpecGuardFadeEnd = desc.FloorSpecGuardFadeEnd,
                                                 .FireflyClampK = desc.FireflyClampK,
-                                                .ProjMatrix = desc.ProjMatrix };
+                                                .SssSeparation = desc.SssSeparation,
+                                                .ProjMatrix = desc.ProjMatrix,
+                                                .SssHistoryAlpha = std::clamp(desc.SssHistoryAlpha, 0.01f, 1.0f) };
 
         in.Resources.InBlurColor = m_smoothFloor;
         in.Resources.InPrevLinearDepth = m_PrevLinearDepth.Get();
         in.Resources.InSSSGuide = desc.InSSSGuide;
+
+        // SSS separation (26 Sep): read last frame's history, write this frame's into the other one. The
+        // first active frame (after switching on or a resize) starts the history afresh.
+        const bool sssActive = desc.SssSeparation > 0.0f && desc.InSSSGuide != nullptr;
+        in.Resources.InSssHistory = m_sssHistory[m_sssRead].Get();
+
+        if (!sssActive)
+            packConstants.SssSeparation = 0.0f;
+        else if (!m_sssWasActive)
+            packConstants.Flags |= UINT(ConvFlags::SssReset);
+
+        // Texture leak views (26 Sep) measure what the denoiser receives, so the packing shader runs its
+        // normal path on those frames; DispatchConversion draws the view afterwards.
+        if (IsLeakView(desc))
+            packConstants.Flags &= ~UINT(ConvFlags::DebugModeMask);
 
         // A null SRV reads as zero, so the shader is safe without this, but the flag keeps
         // the "no mask provided" case explicit and visible in the debug views.
@@ -554,13 +591,60 @@ struct FSRDPreprocessor_Dx12::Impl
             packConstants.Flags &= ~UINT(ConvFlags::Probe);
         }
 
-        // u0-u6: the denoiser inputs, u7: the probe texture (always bound, written only with the flag)
+        // u0-u6: the denoiser inputs, u7: the probe texture (always bound, written only with the flag),
+        // u8: this frame's SSS history (always bound, written only while the separation is on)
         std::array<ID3D12Resource*, Conversion::kUavCount> uavs {};
         std::copy(std::begin(m_out.AsRawArray), std::end(m_out.AsRawArray), uavs.begin());
-        uavs[Conversion::Output::kCount] = m_probeTex.Get();
+        uavs[Conversion::kProbeUav] = m_probeTex.Get();
+        uavs[Conversion::kSssHistoryUav] = m_sssHistory[1 - m_sssRead].Get();
 
         const std::span<const byte> convCBData((const byte*) &packConstants, sizeof(packConstants));
         m_convShader.Dispatch(cmdList, convCBData, in.AsArray, uavs, dispatchSize, true);
+
+        if (sssActive)
+            m_sssRead = 1 - m_sssRead;
+
+        m_sssWasActive = sssActive;
+    }
+
+    static bool IsLeakView(const ConversionDesc& desc)
+    {
+        const uint32_t debugMode = desc.Flags & uint32_t(ConvFlags::DebugModeMask);
+        return debugMode == uint32_t(ConvFlags::DebugLeakSpecular) ||
+               debugMode == uint32_t(ConvFlags::DebugLeakDiffuse);
+    }
+
+    // Texture leak view (26 Sep): FSRDLeak.hlsl reads the packing shader's outputs and draws into the
+    // scratch buffer, which is then copied over SpecRadiance - the texture a conversion debug view shows.
+    // The denoiser is bypassed on those frames, so nothing else reads SpecRadiance.
+    void DispatchLeakView(ID3D12GraphicsCommandList* cmdList, const ConversionDesc& desc)
+    {
+        const uint32_t debugMode = desc.Flags & uint32_t(ConvFlags::DebugModeMask);
+        const bool diffuse = debugMode == uint32_t(ConvFlags::DebugLeakDiffuse);
+
+        Leak::Constants constants = { .DstTexSize = desc.RenderSize,
+                                      .Flags = diffuse ? uint32_t(Leak::Flags::Diffuse) : 0u };
+
+        Leak::Input in = { .Resources = { .InSpecRadiance = m_out.Resources.SpecRadiance.Get(),
+                                          .InDiffRadiance = m_out.Resources.DiffRadiance.Get(),
+                                          .InSpecAlbedo = m_out.Resources.SpecAlbedo.Get(),
+                                          .InDiffAlbedo = m_out.Resources.DiffAlbedo.Get(),
+                                          .InLinearDepth = m_LinearDepth.Get(),
+                                          .InNormals = m_out.Resources.Normals.Get() } };
+
+        std::array<ID3D12Resource*, Leak::kOutputCount> out { m_outputBuffer1.Get() };
+
+        const XMFLOAT2 dispatchSize = { desc.RenderSize.x, desc.RenderSize.y };
+        m_leakShader.Dispatch(cmdList, GetAsByteSpan(constants), in.AsArray, out, dispatchSize);
+
+        ID3D12Resource* view = m_outputBuffer1.Get();
+        ID3D12Resource* shown = m_out.Resources.SpecRadiance.Get();
+
+        AddBarrier(cmdList, view, kSrvState, D3D12_RESOURCE_STATE_COPY_SOURCE);
+        AddBarrier(cmdList, shown, kSrvState, D3D12_RESOURCE_STATE_COPY_DEST);
+        cmdList->CopyResource(shown, view);
+        AddBarrier(cmdList, view, D3D12_RESOURCE_STATE_COPY_SOURCE, kSrvState);
+        AddBarrier(cmdList, shown, D3D12_RESOURCE_STATE_COPY_DEST, kSrvState);
     }
 
     void DispatchConversion(ID3D12GraphicsCommandList* cmdList, const ConversionDesc& desc)
@@ -601,6 +685,10 @@ struct FSRDPreprocessor_Dx12::Impl
 
         // The probe texture is back in SRV state after the dispatch
         RecordProbeTexCopy(cmdList);
+
+        // Texture leak views (26 Sep), while the scratch buffers are still in SRV state
+        if (IsLeakView(desc))
+            DispatchLeakView(cmdList, desc);
 
         // Transition output buffers to UAV after last composition pass or first init.
         // The denoiser will be writing to these.
@@ -1009,7 +1097,8 @@ FSRDPreprocessor_Dx12::FSRDPreprocessor_Dx12(std::string_view name, ID3D12Device
     {
         m_impl->m_pDev = pDev;
         m_impl->Initialize(GetAsByteSpan(FSRDFloorSeed_cso), GetAsByteSpan(FSRDFloor_cso),
-                           GetAsByteSpan(FSRDInputConv_cso), GetAsByteSpan(FSRDOutputComp_cso));
+                           GetAsByteSpan(FSRDInputConv_cso), GetAsByteSpan(FSRDOutputComp_cso),
+                           GetAsByteSpan(FSRDLeak_cso));
         m_IsInitialized = true;
     }
     catch (const std::exception& err)
@@ -1163,6 +1252,8 @@ uint64_t FSRDPreprocessor_Dx12::GetGpuMemoryBytes() const
     Add(impl.m_outputBuffer1.Get());
     Add(impl.m_outputBuffer2.Get());
     Add(impl.m_probeTex.Get());
+    Add(impl.m_sssHistory[0].Get());
+    Add(impl.m_sssHistory[1].Get());
 
     for (const auto& slot : impl.m_probeSlots)
         Add(slot.readback.Get());

@@ -532,6 +532,7 @@ copy NUL "$(SolutionDir)x64\Release\a\!! EXTRACT ALL FILES TO GAME FOLDER !!" /Y
     <ClInclude Include="shaders\fsrd_preprocess\precompile\FSRDFloor_Shader.h" />
     <ClInclude Include="shaders\fsrd_preprocess\precompile\FSRDInputConv_Shader.h" />
     <ClInclude Include="shaders\fsrd_preprocess\precompile\FSRDOutputComp_Shader.h" />
+    <ClInclude Include="shaders\fsrd_preprocess\precompile\FSRDLeak_Shader.h" />
     <ClInclude Include="inputs\FfxApi_Dx12.h" />
     <ClInclude Include="inputs\FSR2_Dx12.h" />
     <ClInclude Include="inputs\FSR3_Dx12.h" />
@@ -965,6 +966,33 @@ copy NUL "$(SolutionDir)x64\Release\a\!! EXTRACT ALL FILES TO GAME FOLDER !!" /Y
       <AdditionalOptions Condition="'$(Configuration)|$(Platform)'=='Release|x64'">/enable-16bit-types %(AdditionalOptions)</AdditionalOptions>
     </FxCompile>
     <FxCompile Include="shaders\fsrd_preprocess\precompile\FSRDOutputComp.hlsl">
+      <EntryPointName Condition="'$(Configuration)|$(Platform)'=='Debug|x64'">CSMain</EntryPointName>
+      <ShaderType Condition="'$(Configuration)|$(Platform)'=='Debug|x64'">Compute</ShaderType>
+      <ShaderModel Condition="'$(Configuration)|$(Platform)'=='Debug|x64'">6.6</ShaderModel>
+      <VariableName Condition="'$(Configuration)|$(Platform)'=='Debug|x64'">%(FileName)_cso</VariableName>
+      <EntryPointName Condition="'$(Configuration)|$(Platform)'=='ReleaseDebug|x64'">CSMain</EntryPointName>
+      <EntryPointName Condition="'$(Configuration)|$(Platform)'=='Release|x64'">CSMain</EntryPointName>
+      <ShaderType Condition="'$(Configuration)|$(Platform)'=='ReleaseDebug|x64'">Compute</ShaderType>
+      <ShaderType Condition="'$(Configuration)|$(Platform)'=='Release|x64'">Compute</ShaderType>
+      <ShaderModel Condition="'$(Configuration)|$(Platform)'=='ReleaseDebug|x64'">6.6</ShaderModel>
+      <ShaderModel Condition="'$(Configuration)|$(Platform)'=='Release|x64'">6.6</ShaderModel>
+      <HeaderFileOutput Condition="'$(Configuration)|$(Platform)'=='Debug|x64'">$(ProjectDir)shaders\fsrd_preprocess\precompile\%(FileName)_Shader.h</HeaderFileOutput>
+      <ObjectFileOutput Condition="'$(Configuration)|$(Platform)'=='Debug|x64'">$(ProjectDir)shaders\fsrd_preprocess\precompile\%(FileName)_Shader.cso</ObjectFileOutput>
+      <VariableName Condition="'$(Configuration)|$(Platform)'=='ReleaseDebug|x64'">%(FileName)_cso</VariableName>
+      <HeaderFileOutput Condition="'$(Configuration)|$(Platform)'=='ReleaseDebug|x64'">$(ProjectDir)shaders\fsrd_preprocess\precompile\%(FileName)_Shader.h</HeaderFileOutput>
+      <ObjectFileOutput Condition="'$(Configuration)|$(Platform)'=='ReleaseDebug|x64'">$(ProjectDir)shaders\fsrd_preprocess\precompile\%(FileName)_Shader.cso</ObjectFileOutput>
+      <VariableName Condition="'$(Configuration)|$(Platform)'=='Release|x64'">%(FileName)_cso</VariableName>
+      <HeaderFileOutput Condition="'$(Configuration)|$(Platform)'=='Release|x64'">$(ProjectDir)shaders\fsrd_preprocess\precompile\%(FileName)_Shader.h</HeaderFileOutput>
+      <ObjectFileOutput Condition="'$(Configuration)|$(Platform)'=='Release|x64'">$(ProjectDir)shaders\fsrd_preprocess\precompile\%(FileName)_Shader.cso</ObjectFileOutput>
+      <DisableOptimizations Condition="'$(Configuration)|$(Platform)'=='Debug|x64'">false</DisableOptimizations>
+      <EnableDebuggingInformation Condition="'$(Configuration)|$(Platform)'=='Debug|x64'">false</EnableDebuggingInformation>
+      <DisableOptimizations Condition="'$(Configuration)|$(Platform)'=='ReleaseDebug|x64'">false</DisableOptimizations>
+      <EnableDebuggingInformation Condition="'$(Configuration)|$(Platform)'=='ReleaseDebug|x64'">false</EnableDebuggingInformation>
+      <DisableOptimizations Condition="'$(Configuration)|$(Platform)'=='Release|x64'">false</DisableOptimizations>
+      <EnableDebuggingInformation Condition="'$(Configuration)|$(Platform)'=='Release|x64'">false</EnableDebuggingInformation>
+      <AdditionalOptions Condition="'$(Configuration)|$(Platform)'=='Release|x64'">/enable-16bit-types</AdditionalOptions>
+    </FxCompile>
+    <FxCompile Include="shaders\fsrd_preprocess\precompile\FSRDLeak.hlsl">
       <EntryPointName Condition="'$(Configuration)|$(Platform)'=='Debug|x64'">CSMain</EntryPointName>
       <ShaderType Condition="'$(Configuration)|$(Platform)'=='Debug|x64'">Compute</ShaderType>
       <ShaderModel Condition="'$(Configuration)|$(Platform)'=='Debug|x64'">6.6</ShaderModel>

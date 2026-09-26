@@ -45,6 +45,7 @@ class FSRDPreprocessor_Dx12
         AbCameraDepthDelta = 1 << 12,  // Old camera-only depth delta (object-motion delta is the default)
         AbHitDistRecon = 1 << 13,      // Fill missing spec hit distances from neighbours (25 Sep)
         AbSpecFollowSurface = 1 << 14, // Hit distance -> 0 on self-moving pixels (25 Sep)
+        SssReset = 1 << 15,            // SSS history invalid this frame (26 Sep, set by the converter itself)
 
         Debug = 1 << 16, // Denoiser and upscaler bypassed for debug out if this is set
         DebugModeMask = 0xFF << 16,
@@ -89,6 +90,10 @@ class FSRDPreprocessor_Dx12
         DebugFireflyClamp = 27 << 17 | Debug,      // pixels the firefly clamp scales down (25 Sep)
         DebugOutSpecHitDist = 28 << 17 | Debug,    // spec hit distance as sent (25 Sep)
         DebugInSSSGuide = 29 << 17 | Debug,        // the game's SSS guide (25 Sep)
+        DebugSssSeparated = 30 << 17 | Debug,      // colour the denoiser works from after SSS separation (26 Sep)
+        DebugSssDelta = 31 << 17 | Debug,          // SSS contribution routed around the denoiser (26 Sep)
+        DebugLeakSpecular = 32 << 17 | Debug,      // texture leak into the specular lighting (26 Sep, FSRDLeak)
+        DebugLeakDiffuse = 33 << 17 | Debug,       // texture leak into the diffuse lighting (26 Sep, FSRDLeak)
     };
 
     enum class CompFlags : uint32_t
@@ -141,7 +146,8 @@ class FSRDPreprocessor_Dx12
     {
         InputResources Resources;
 
-        // DLSSD SSS guide (25 Sep, optional): bound at t11 for the InSSSGuide view only.
+        // DLSSD SSS guide (25 Sep, optional): bound at t11. Drives the SSS separation (26 Sep) and the
+        // InSSSGuide view.
         ID3D12Resource* InSSSGuide = nullptr;
 
         DirectX::XMFLOAT4X4 InvViewMatrix;  // DLSSD WorldToView^1 - Camera matrix
@@ -200,6 +206,13 @@ class FSRDPreprocessor_Dx12
 
         // Firefly clamp (25 Sep): max ratio of a pixel's lighting to its brightest neighbour's. 0 = off.
         float FireflyClampK;
+
+        // SSS separation (26 Sep): share of the SSS contribution (from the guide) taken out of the
+        // denoiser's input and routed around it, averaged over frames. 0 = off.
+        float SssSeparation = 0.0f;
+
+        // Weight of the current frame in the SSS history. 1 = no history.
+        float SssHistoryAlpha = 0.1f;
 
         // Biases the Mode 2 split toward specular on smooth surfaces. 0 is bit-identical.
         float SplitPriorStrength;
