@@ -473,7 +473,9 @@ class Config
     // Routes pixels flagged by the DLSS bias-current-color mask (particles, alpha layers,
     // animated / video textures) around the denoiser via the floor and skip signal.
     // 0 restores the previous behaviour, where the mask was bound but unused.
-    CustomOptional<float> FfxDenoiserBiasMaskStrength { 1.0f };
+    // 26 Sep: default 0.5 (was 1). The mask also marks animated puddle surfaces, which stand out at full
+    // strength; particles like the koi fish still read fine at 0.5.
+    CustomOptional<float> FfxDenoiserBiasMaskStrength { 0.5f };
 
     // Fraction of the floor filter's high frequency luminance residual pushed back into
     // the floor on the final pass, so texture microcontrast bypasses the denoiser.
