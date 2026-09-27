@@ -515,12 +515,6 @@ class Config
     // Weight of the current frame in the SSS history. Lower = smoother, slower to follow lighting changes.
     CustomOptional<float> FfxDenoiserSssHistoryAlpha { 0.1f };
 
-    // Distance fade of the albedo division (27 Sep), linear depth: beyond End, divide by (and remodulate with)
-    // the local mean albedo instead of the per-pixel one, so fog and haze aren't imprinted with the surface
-    // texture. End <= Start = off.
-    CustomOptional<float> FfxDenoiserAlbedoFadeStart { 0.0f };
-    CustomOptional<float> FfxDenoiserAlbedoFadeEnd { 0.0f };
-
     // Diagnostics and input-encoding probes. Requires a denoiser context recreate.
     CustomOptional<bool> FfxDenoiserFsrDebugViews { false };
 

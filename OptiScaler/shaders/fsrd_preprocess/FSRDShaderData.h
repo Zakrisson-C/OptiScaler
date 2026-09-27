@@ -187,11 +187,7 @@ struct alignas(16) Constants
 
     // SSS separation (26 Sep): weight of the current frame in the SSS history. 1 = no history.
     float SssHistoryAlpha;
-
-    // Distance fade of the albedo division (27 Sep), linear depth. End <= Start = off (bit-identical).
-    float AlbedoFadeStart;
-    float AlbedoFadeEnd;
-    float _Padding4;
+    float _Padding4[3];
 };
 
 // Matches the cbuffer layout DXC reports for CB_Packing in FSRDInputConv.hlsl.
@@ -202,8 +198,6 @@ static_assert(offsetof(Constants, FireflyClampK) == 280, "Conversion::Constants 
 static_assert(offsetof(Constants, SssSeparation) == 284, "Conversion::Constants out of sync with CB_Packing");
 static_assert(offsetof(Constants, ProjMatrix) == 288, "Conversion::Constants out of sync with CB_Packing");
 static_assert(offsetof(Constants, SssHistoryAlpha) == 352, "Conversion::Constants out of sync with CB_Packing");
-static_assert(offsetof(Constants, AlbedoFadeStart) == 356, "Conversion::Constants out of sync with CB_Packing");
-static_assert(offsetof(Constants, AlbedoFadeEnd) == 360, "Conversion::Constants out of sync with CB_Packing");
 
 union Input
 {

@@ -89,8 +89,6 @@ static const uint2 s_ThreadGroupSize = uint2(THREAD_GROUP_SIZE_X, THREAD_GROUP_S
 #define FLAGS_DEBUG_SSS_SEPARATED       (30 << 17 | FLAGS_DEBUG)
 #define FLAGS_DEBUG_SSS_DELTA           (31 << 17 | FLAGS_DEBUG)
 // 32/33 (texture leak, specular / diffuse) are drawn by FSRDLeak.hlsl, not here.
-// 27 Sep. How far the albedo divisor has been faded to its local mean (distance fade).
-#define FLAGS_DEBUG_ALBEDO_FADE         (34 << 17 | FLAGS_DEBUG)
 
 // DLSS-RR Inputs
 Texture2D<half3> InColor : register(t0); // RGB - NVSDK_NGX_Parameter_Color
@@ -208,12 +206,7 @@ cbuffer CB_Packing : register(b0)
 
     // SSS separation (26 Sep): weight of the current frame in the SSS history. 1 = no history.
     float SssHistoryAlpha;
-
-    // Distance fade of the albedo division (27 Sep), linear depth units. Nearer than start: per-pixel
-    // albedo; beyond end: the local mean albedo. End <= Start = off (bit-identical).
-    float AlbedoFadeStart;
-    float AlbedoFadeEnd;
-    float _Padding4;
+    float3 _Padding4;
 };
 
 bool IsSet(uint mask) { return (Flags & mask) == mask; }
@@ -254,41 +247,6 @@ uint GetDebugMode() { return (Flags & FLAGS_DEBUG_MODE_MASK); }
 // demodulated signal in a sane range; whatever energy that costs is recovered by the
 // existing residual path, which folds it into the skip signal.
 static const float kMinReflectance = 8e-3f;
-
-// Distance fade of the albedo division (27 Sep). Mean input albedo over 5x5 on the same surface (depth within
-// 5%), leaving out skipped pixels (no albedo) and emissive-encoded ones (albedo sum far above 1). Falls back to
-// the pixel's own values if no neighbour qualifies.
-void GetLocalMeanAlbedo(const int2 px, const float depth, const float3 centerDiff, const float3 centerSpec,
-                        out float3 meanDiff, out float3 meanSpec)
-{
-    const int2 maxPx = int2(DstTexSize.xy) - 1;
-    float3 sumDiff = 0.0f;
-    float3 sumSpec = 0.0f;
-    float weight = 0.0f;
-
-    [unroll]
-    for (int y = -2; y <= 2; y++)
-    {
-        [unroll]
-        for (int x = -2; x <= 2; x++)
-        {
-            const int2 p = clamp(px + int2(x, y), int2(0, 0), maxPx);
-            const float3 d = GetSafeFP16(InDiffAlbedo[p].rgb);
-            const float3 s = GetSafeFP16(InSpecAlbedo[p].rgb);
-            const float sum = dot(d + s, 1.0f);
-
-            if (sum > 1e-2f && sum < 5.0f && abs(abs(InDepth[p]) - depth) < 0.05f * depth)
-            {
-                sumDiff += d;
-                sumSpec += s;
-                weight += 1.0f;
-            }
-        }
-    }
-
-    meanDiff = (weight > 0.0f) ? sumDiff / weight : centerDiff;
-    meanSpec = (weight > 0.0f) ? sumSpec / weight : centerSpec;
-}
 
 // SSS history (26 Sep). Exponential average of the SSS contribution along the game's motion vectors.
 // The history's alpha holds each pixel's linear depth (0 = no SSS material there), which doubles as the
@@ -473,35 +431,6 @@ void CSMain(uint3 groupID : SV_GroupID, uint3 gtID : SV_GroupThreadID)
     const float isEmissive = IsSet(FLAGS_AB_NO_EMISSIVE) ? 0.0f : emissiveScore;
     diffAlbedo.rgb *= (1.0f - isEmissive);
     specReflectance.rgb = lerp(specReflectance.rgb, 0.1f, isEmissive);
-
-    // Distance fade of the albedo division (27 Sep).
-    //
-    // Fog, haze and other light composited over a surface isn't multiplied by that surface's albedo, but it
-    // gets divided by it here all the same, which prints an inverted copy of the texture into it. The
-    // denoiser smooths that copy away, and multiplying the albedo back in afterwards stamps the texture onto
-    // the fog: distant texture comes out with more contrast than the game rendered (DenoiserBypass, the
-    // same round trip without the denoiser, is clean). Beyond the fade distance the divisor - and the albedo
-    // stored for remodulation, so the round trip stays exact - is blended toward the local mean albedo. The
-    // fog then carries no texture pattern; the surface's own fine texture travels through the denoiser as
-    // lighting instead, which at that distance is small on screen and mostly under haze.
-    float albedoFade = 0.0f;
-
-    [branch]
-    if (AlbedoFadeEnd > AlbedoFadeStart)
-    {
-        const float fadeDepth = abs(InDepth[px]);
-        albedoFade = smoothstep(AlbedoFadeStart, AlbedoFadeEnd, fadeDepth) * (1.0f - isEmissive);
-
-        [branch]
-        if (albedoFade > 0.0f)
-        {
-            float3 meanDiff;
-            float3 meanSpec;
-            GetLocalMeanAlbedo(px, fadeDepth, diffAlbedo, specReflectance, meanDiff, meanSpec);
-            diffAlbedo.rgb = lerp(diffAlbedo.rgb, meanDiff, albedoFade);
-            specReflectance.rgb = lerp(specReflectance.rgb, meanSpec, albedoFade);
-        }
-    }
 
     PROBE_WRITE(PROBE_RAW_SPEC_ALBEDO, float4(GetSafeFP16(InSpecAlbedo[px].rgb), totalAlbedo));
 
@@ -952,13 +881,6 @@ void CSMain(uint3 groupID : SV_GroupID, uint3 gtID : SV_GroupThreadID)
                 // the guide reads the way the DLSS-RR spec describes it.
                 case FLAGS_DEBUG_SSS_SEPARATED:
                     debugColor = rawColor;
-                    break;
-
-                // 27 Sep. Distance fade of the albedo division: Turbo from blue (just started) to red (fully
-                // on the local mean albedo), over a dim grey copy of the image where it is off.
-                case FLAGS_DEBUG_ALBEDO_FADE:
-                    debugColor = (albedoFade > 0.0f) ? TurboColormap(albedoFade)
-                                                     : 0.25f * saturate(GetLuminance(rawColorFull)).xxx;
                     break;
 
                 // 26 Sep. The SSS contribution routed around the denoiser, after the history: green = light

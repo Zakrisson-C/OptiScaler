@@ -2575,9 +2575,6 @@ const char* FsrdLegendText(const char* view)
                                  "albedo). Black = no texture there to leak. Noisy per frame; read the average." },
         { "TextureLeakDiffuse", "Same as TextureLeakSpecular for the diffuse lobe: diffuse lighting against diffuse "
                                 "albedo. Liveries, graffiti and road markings are the places to look." },
-        { "AlbedoFade", "Where the albedo distance fade is active: Turbo from blue (just started) to red (fully on "
-                        "the local mean albedo); dim grey = per-pixel albedo as before. Nothing coloured while "
-                        "Albedo Fade End <= Start." },
         { "OutSpecHitDist", "Specular hit distance as sent to the denoiser, after the gate, Hit Distance Scale and "
                             "the reconstruction switch. Same colours as InSpecHitDist: magenta = 0, Turbo on "
                             "log2(1 + d) over 0..127." },
@@ -2911,7 +2908,7 @@ std::string FsrdBuildReport(Config* config, State& state, const FSRD::ProbeReado
         "Shim sliders: correlation bias {}, floor isolation {}, bias mask {}, detail boost {}, "
         "normal sharpness {}, albedo guide {}, luma symmetry {}, grazing {}, soft min {}, roughness "
         "exponent {}, hit distance scale {}, spec guard {} (fade {}..{}), split prior {}, firefly clamp {}, "
-        "SSS separation {}, SSS history {}, albedo fade {}..{}",
+        "SSS separation {}, SSS history {}",
         FsrdNum(config->FfxDenoiserCorrelationBias.value_or_default()),
         FsrdNum(config->FfxDenoiserFloorIsolation.value_or_default()),
         FsrdNum(config->FfxDenoiserBiasMaskStrength.value_or_default()),
@@ -2929,9 +2926,7 @@ std::string FsrdBuildReport(Config* config, State& state, const FSRD::ProbeReado
         FsrdNum(config->FfxDenoiserSplitPrior.value_or_default()),
         FsrdNum(config->FfxDenoiserFireflyClamp.value_or_default()),
         FsrdNum(config->FfxDenoiserSssSeparation.value_or_default()),
-        FsrdNum(config->FfxDenoiserSssHistoryAlpha.value_or_default()),
-        FsrdNum(config->FfxDenoiserAlbedoFadeStart.value_or_default()),
-        FsrdNum(config->FfxDenoiserAlbedoFadeEnd.value_or_default())));
+        FsrdNum(config->FfxDenoiserSssHistoryAlpha.value_or_default())));
     Line(std::format("Buckets: diffuse as direct {}, specular as direct {}; flip view z {}",
                      config->FfxDenoiserDiffuseAsDirect.value_or_default() ? "on" : "off",
                      config->FfxDenoiserSpecularAsDirect.value_or_default() ? "on" : "off",
@@ -4366,25 +4361,6 @@ void MenuCommon::RenderActiveUpscalerSettings(RenderMenuContext& ctx)
                                "Lower = smoother skin, slower to follow lighting\n"
                                "changes (a lag on the SSS glow only). 1 = no\n"
                                "averaging. Default 0.1.");
-
-                if (float v = config->FfxDenoiserAlbedoFadeStart.value_or_default();
-                    ImGui::SliderFloat("Albedo Fade Start", &v, 0, 1000, "%.1f", ImGuiSliderFlags_Logarithmic))
-                    config->FfxDenoiserAlbedoFadeStart = v;
-                ShowHelpMarker("Linear depth where the albedo division starts to\n"
-                               "fade to the local mean albedo. Fog and haze over\n"
-                               "distant surfaces then stop picking up the texture\n"
-                               "pattern (the extra background contrast). Read a\n"
-                               "surface's depth from the probe's 'Linear depth'\n"
-                               "row. Try 30.");
-
-                if (float v = config->FfxDenoiserAlbedoFadeEnd.value_or_default();
-                    ImGui::SliderFloat("Albedo Fade End", &v, 0, 1000, "%.1f", ImGuiSliderFlags_Logarithmic))
-                    config->FfxDenoiserAlbedoFadeEnd = v;
-                ShowHelpMarker("Linear depth beyond which the division uses the\n"
-                               "local mean albedo only. Fine texture there goes\n"
-                               "through the denoiser as lighting, so too near a\n"
-                               "value softens mid-distance texture. End <= Start\n"
-                               "= off (default). Try 150. View: AlbedoFade.");
 
                 // Pixel probe, A/B switches for the audit findings, diagnostics (24 Sep)
                 RenderFsrdDebugTools(ctx);
