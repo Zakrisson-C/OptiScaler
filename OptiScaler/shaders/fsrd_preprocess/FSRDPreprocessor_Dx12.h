@@ -94,6 +94,8 @@ class FSRDPreprocessor_Dx12
         DebugSssDelta = 31 << 17 | Debug,          // SSS contribution routed around the denoiser (26 Sep)
         DebugLeakSpecular = 32 << 17 | Debug,      // texture leak into the specular lighting (26 Sep, FSRDLeak)
         DebugLeakDiffuse = 33 << 17 | Debug,       // texture leak into the diffuse lighting (26 Sep, FSRDLeak)
+        DebugAdditiveLight = 34 << 17 | Debug,     // light that doesn't follow the albedo (27 Sep, FSRDSplitFit)
+        DebugSpecularShare = 35 << 17 | Debug,     // specular share after the additive light split (27 Sep)
     };
 
     enum class CompFlags : uint32_t
@@ -213,6 +215,13 @@ class FSRDPreprocessor_Dx12
 
         // Weight of the current frame in the SSS history. 1 = no history.
         float SssHistoryAlpha = 0.1f;
+
+        // Additive light split (27 Sep): strength of the intercept (light that doesn't follow the albedo)
+        // routed to the specular lobe instead of being divided by the texture. 0 = off.
+        float AdditiveSeparation = 0.0f;
+
+        // Weight of the current frame in the averaged specular share. 1 = no history.
+        float AdditiveHistoryAlpha = 0.2f;
 
         // Biases the Mode 2 split toward specular on smooth surfaces. 0 is bit-identical.
         float SplitPriorStrength;

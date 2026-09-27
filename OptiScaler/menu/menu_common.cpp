@@ -2575,6 +2575,12 @@ const char* FsrdLegendText(const char* view)
                                  "albedo). Black = no texture there to leak. Noisy per frame; read the average." },
         { "TextureLeakDiffuse", "Same as TextureLeakSpecular for the diffuse lobe: diffuse lighting against diffuse "
                                 "albedo. Liveries, graffiti and road markings are the places to look." },
+        { "AdditiveLight", "The additive light split's estimate of the light that doesn't follow the albedo (fog, "
+                           "haze, reflection brighter than the diffuse lighting), in the image's own colours. Black "
+                           "= none found, or no albedo contrast to find it with. Needs Additive Light Split above 0." },
+        { "SpecularShare", "Share of each colour channel sent to the specular lobe after the additive light split: "
+                           "black = all diffuse, white = all specular. Without the split this is the reflectance "
+                           "ratio (dark on most surfaces). Needs Additive Light Split above 0." },
         { "OutSpecHitDist", "Specular hit distance as sent to the denoiser, after the gate, Hit Distance Scale and "
                             "the reconstruction switch. Same colours as InSpecHitDist: magenta = 0, Turbo on "
                             "log2(1 + d) over 0..127." },
@@ -2908,7 +2914,7 @@ std::string FsrdBuildReport(Config* config, State& state, const FSRD::ProbeReado
         "Shim sliders: correlation bias {}, floor isolation {}, bias mask {}, detail boost {}, "
         "normal sharpness {}, albedo guide {}, luma symmetry {}, grazing {}, soft min {}, roughness "
         "exponent {}, hit distance scale {}, spec guard {} (fade {}..{}), split prior {}, firefly clamp {}, "
-        "SSS separation {}, SSS history {}",
+        "SSS separation {}, SSS history {}, additive split {} (history {})",
         FsrdNum(config->FfxDenoiserCorrelationBias.value_or_default()),
         FsrdNum(config->FfxDenoiserFloorIsolation.value_or_default()),
         FsrdNum(config->FfxDenoiserBiasMaskStrength.value_or_default()),
@@ -2926,7 +2932,9 @@ std::string FsrdBuildReport(Config* config, State& state, const FSRD::ProbeReado
         FsrdNum(config->FfxDenoiserSplitPrior.value_or_default()),
         FsrdNum(config->FfxDenoiserFireflyClamp.value_or_default()),
         FsrdNum(config->FfxDenoiserSssSeparation.value_or_default()),
-        FsrdNum(config->FfxDenoiserSssHistoryAlpha.value_or_default())));
+        FsrdNum(config->FfxDenoiserSssHistoryAlpha.value_or_default()),
+        FsrdNum(config->FfxDenoiserAdditiveSplit.value_or_default()),
+        FsrdNum(config->FfxDenoiserAdditiveSplitHistory.value_or_default())));
     Line(std::format("Buckets: diffuse as direct {}, specular as direct {}; flip view z {}",
                      config->FfxDenoiserDiffuseAsDirect.value_or_default() ? "on" : "off",
                      config->FfxDenoiserSpecularAsDirect.value_or_default() ? "on" : "off",
@@ -4361,6 +4369,27 @@ void MenuCommon::RenderActiveUpscalerSettings(RenderMenuContext& ctx)
                                "Lower = smoother skin, slower to follow lighting\n"
                                "changes (a lag on the SSS glow only). 1 = no\n"
                                "averaging. Default 0.1.");
+
+                if (float v = config->FfxDenoiserAdditiveSplit.value_or_default();
+                    ImGui::SliderFloat("Additive Light Split", &v, 0, 1))
+                    config->FfxDenoiserAdditiveSplit = v;
+                ShowHelpMarker("Finds light that doesn't follow the albedo (fog,\n"
+                               "haze, a reflection brighter than the diffuse\n"
+                               "lighting) by fitting colour against albedo over\n"
+                               "7x7 on one surface, and sends it to the specular\n"
+                               "lobe instead of dividing it by the texture. The\n"
+                               "per-pixel albedo division stays: texture keeps\n"
+                               "its sharpness. 0 = off. Views: AdditiveLight,\n"
+                               "SpecularShare, TextureLeakDiffuse.");
+
+                if (float v = config->FfxDenoiserAdditiveSplitHistory.value_or_default();
+                    ImGui::SliderFloat("Additive Split History", &v, 0.02f, 1, "%.3f", ImGuiSliderFlags_Logarithmic))
+                    config->FfxDenoiserAdditiveSplitHistory = v;
+                ShowHelpMarker("Weight of the current frame in the averaged\n"
+                               "routing. It only decides which lobe light goes\n"
+                               "to, so a lower value can't ghost the image; it\n"
+                               "steadies the routing where the fit is noisy.\n"
+                               "1 = no averaging. Default 0.2.");
 
                 // Pixel probe, A/B switches for the audit findings, diagnostics (24 Sep)
                 RenderFsrdDebugTools(ctx);

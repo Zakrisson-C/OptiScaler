@@ -4,7 +4,7 @@
 #define MainRS \
     "RootFlags(0), " \
     "CBV(b0), " \
-    "DescriptorTable(SRV(t0, numDescriptors = 13), visibility = SHADER_VISIBILITY_ALL), " \
+    "DescriptorTable(SRV(t0, numDescriptors = 14), visibility = SHADER_VISIBILITY_ALL), " \
     "DescriptorTable(UAV(u0, numDescriptors = 9), visibility = SHADER_VISIBILITY_ALL), "
 
 // Dispatch config
@@ -88,7 +88,8 @@ static const uint2 s_ThreadGroupSize = uint2(THREAD_GROUP_SIZE_X, THREAD_GROUP_S
 // 26 Sep. SSS separation: the colour the denoiser works from, and the SSS contribution routed around it.
 #define FLAGS_DEBUG_SSS_SEPARATED       (30 << 17 | FLAGS_DEBUG)
 #define FLAGS_DEBUG_SSS_DELTA           (31 << 17 | FLAGS_DEBUG)
-// 32/33 (texture leak, specular / diffuse) are drawn by FSRDLeak.hlsl, not here.
+// 32/33 (texture leak, specular / diffuse) are drawn by FSRDLeak.hlsl, 34/35 (additive light, specular share)
+// are copies of FSRDSplitFit's outputs; none of them are drawn here.
 
 // DLSS-RR Inputs
 Texture2D<half3> InColor : register(t0); // RGB - NVSDK_NGX_Parameter_Color
@@ -114,6 +115,10 @@ Texture2D<float> InSSSGuide : register(t11);
 
 // SSS history (26 Sep): last frame's accumulated SSS contribution (rgb) and linear depth (a, 0 = no SSS).
 Texture2D<half4> InSssHistory : register(t12);
+
+// Additive light split (27 Sep, FSRDSplitFit.hlsl): specular share per channel (rgb) from a per-window fit of
+// colour against albedo, averaged over frames; alpha 0 = no fit here, keep the reflectance ratio.
+Texture2D<half4> InSplitFit : register(t13);
 
 // FSR-RR - ffxDispatchDescDenoiserIndirectSpecular / ffxDispatchDescDenoiserIndirectDiffuse
 // (transplant, 22 Sep: Mode 1's combined-signal shape removed, no successor in denoiser 1.2)
@@ -206,7 +211,10 @@ cbuffer CB_Packing : register(b0)
 
     // SSS separation (26 Sep): weight of the current frame in the SSS history. 1 = no history.
     float SssHistoryAlpha;
-    float3 _Padding4;
+
+    // Additive light split (27 Sep): > 0 = take the specular share from InSplitFit. 0 = off (bit-identical).
+    float AdditiveSeparation;
+    float2 _Padding4;
 };
 
 bool IsSet(uint mask) { return (Flags & mask) == mask; }
@@ -686,8 +694,21 @@ void CSMain(uint3 groupID : SV_GroupID, uint3 gtID : SV_GroupThreadID)
             // sending everything down the diffuse path - it carries no reprojection state
             // and cannot smear.
             const float3 totalWeight = diffWeight + specWeight;
-            const float3 specFraction = specWeight * rcp(max(totalWeight, kMinReflectance));
+            float3 specFraction = specWeight * rcp(max(totalWeight, kMinReflectance));
             const float3 isSplitValid = smoothstep(0.5f * kMinReflectance, kMinReflectance, totalWeight);
+
+            // Additive light split (27 Sep, see FSRDSplitFit.hlsl): light that doesn't follow the albedo (fog,
+            // a reflection brighter than the diffuse lighting on a textured surface) goes to the specular lobe,
+            // whose albedo carries no texture, instead of being divided by the texture. Emissive pixels keep
+            // the override's split.
+            [branch]
+            if (AdditiveSeparation > 0.0f)
+            {
+                const float4 fit = InSplitFit[px];
+
+                if (fit.a > 0.0f)
+                    specFraction = lerp(saturate(fit.rgb), specFraction, isEmissive);
+            }
 
             // Split prior - CONTINGENT, leave at 0 until the signal-delta view confirms.
             //

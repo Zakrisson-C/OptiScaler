@@ -187,7 +187,10 @@ struct alignas(16) Constants
 
     // SSS separation (26 Sep): weight of the current frame in the SSS history. 1 = no history.
     float SssHistoryAlpha;
-    float _Padding4[3];
+
+    // Additive light split (27 Sep): > 0 = specular share from the split fit. 0 = off (bit-identical).
+    float AdditiveSeparation;
+    float _Padding4[2];
 };
 
 // Matches the cbuffer layout DXC reports for CB_Packing in FSRDInputConv.hlsl.
@@ -198,6 +201,7 @@ static_assert(offsetof(Constants, FireflyClampK) == 280, "Conversion::Constants 
 static_assert(offsetof(Constants, SssSeparation) == 284, "Conversion::Constants out of sync with CB_Packing");
 static_assert(offsetof(Constants, ProjMatrix) == 288, "Conversion::Constants out of sync with CB_Packing");
 static_assert(offsetof(Constants, SssHistoryAlpha) == 352, "Conversion::Constants out of sync with CB_Packing");
+static_assert(offsetof(Constants, AdditiveSeparation) == 356, "Conversion::Constants out of sync with CB_Packing");
 
 union Input
 {
@@ -218,6 +222,7 @@ union Input
         ID3D12Resource* InPrevLinearDepth; // t10, last frame's linear depth (24 Sep; was the unused InEdgeGuide)
         ID3D12Resource* InSSSGuide;        // t11, DLSSD SSS guide (25 Sep, optional)
         ID3D12Resource* InSssHistory;      // t12, last frame's SSS history (26 Sep)
+        ID3D12Resource* InSplitFit;        // t13, specular share from the additive light split (27 Sep)
     };
 
     // The number of D3D12 resources in the struct
@@ -284,6 +289,52 @@ constexpr UINT kUavCount = Output::kCount + 2;
 constexpr UINT kProbeUav = Output::kCount;
 constexpr UINT kSssHistoryUav = Output::kCount + 1;
 } // namespace Conversion
+
+// Additive light split (27 Sep, FSRDSplitFit.hlsl): per-window fit of colour against albedo; its specular
+// share (averaged over frames) replaces the reflectance ratio in the packing shader.
+namespace SplitFit
+{
+constexpr UINT kBackBufferCount = 3;
+
+enum class Flags : uint32_t
+{
+    None = 0,
+    Reset = (1 << 0) // history invalid this frame
+};
+
+struct alignas(16) Constants
+{
+    XMFLOAT4 DstTexSize; // XY = size, ZW = 1 / size
+    float Strength;      // scales the intercept; 0 = the old split
+    float HistoryAlpha;  // weight of the current frame; 1 = no history
+    uint32_t Flags;
+    float _Padding;
+};
+
+static_assert(sizeof(Constants) == 32, "SplitFit::Constants out of sync with CB_SplitFit");
+
+union Input
+{
+    struct Data
+    {
+        ID3D12Resource* InColor;
+        ID3D12Resource* InDiffAlbedo;
+        ID3D12Resource* InSpecAlbedo;
+        ID3D12Resource* InLinearDepth;
+        ID3D12Resource* InNormals;
+        ID3D12Resource* InMotionVectors;
+        ID3D12Resource* InHistory;
+    };
+
+    static constexpr uint32_t kCount = sizeof(Data) / sizeof(ID3D12Resource*);
+
+    Data Resources;
+
+    ID3D12Resource* AsArray[kCount];
+};
+
+constexpr UINT kOutputCount = 2; // share history (read by the packing shader), intercept (view)
+} // namespace SplitFit
 
 // Texture leak views (26 Sep, FSRDLeak.hlsl): debug only, one dispatch on frames that show one.
 namespace Leak

@@ -8,6 +8,7 @@
 #include "precompile/FSRDFloor_Shader.h"
 #include "precompile/FSRDOutputComp_Shader.h"
 #include "precompile/FSRDLeak_Shader.h"
+#include "precompile/FSRDSplitFit_Shader.h"
 
 #include "dx12/ffx_api_dx12.h"
 #include "fsr-rr/ffx_denoiser.h"
@@ -67,6 +68,10 @@ constexpr DXGI_FORMAT Probe = DXGI_FORMAT_R32G32B32A32_FLOAT;
 
 // SSS separation history (26 Sep): accumulated SSS contribution rgb, linear depth a
 constexpr DXGI_FORMAT SssHistory = DXGI_FORMAT_R16G16B16A16_FLOAT;
+
+// Additive light split (27 Sep): specular share rgb + linear depth a (history), intercept rgb (view)
+constexpr DXGI_FORMAT SplitShare = DXGI_FORMAT_R16G16B16A16_FLOAT;
+constexpr DXGI_FORMAT SplitIntercept = DXGI_FORMAT_R16G16B16A16_FLOAT;
 } // namespace FSRDFormats
 
 namespace FSRDProbe
@@ -277,7 +282,8 @@ struct FSRDPreprocessor_Dx12::Impl
     ComputeState m_floorFilterShader;
     ComputeState m_convShader;
     ComputeState m_compShader;
-    ComputeState m_leakShader; // texture leak views (26 Sep), debug only
+    ComputeState m_leakShader;     // texture leak views (26 Sep), debug only
+    ComputeState m_splitFitShader; // additive light split (27 Sep)
 
     UINT m_maxWidth = 0;
     UINT m_maxHeight = 0;
@@ -298,6 +304,14 @@ struct FSRDPreprocessor_Dx12::Impl
     ComPtr<ID3D12Resource> m_sssHistory[2];
     uint32_t m_sssRead = 0;
     bool m_sssWasActive = false; // false = history invalid, the next active frame starts it afresh
+
+    // Additive light split (27 Sep): ping-pong specular share history and the intercept for the view.
+    // m_splitCurrent is the share written this frame (nullptr = split off this frame).
+    ComPtr<ID3D12Resource> m_splitHistory[2];
+    ComPtr<ID3D12Resource> m_splitIntercept;
+    uint32_t m_splitRead = 0;
+    bool m_splitWasActive = false;
+    ID3D12Resource* m_splitCurrent = nullptr;
 
     // A/B, audit finding 3: albedo textures created as RGBA16_FLOAT
     bool m_albedo16 = false;
@@ -338,7 +352,7 @@ struct FSRDPreprocessor_Dx12::Impl
 
     void Initialize(std::span<const byte> blSeedByteCode, std::span<const byte> blPyramidByteCode,
                     std::span<const byte> convByteCode, std::span<const byte> compByteCode,
-                    std::span<const byte> leakByteCode)
+                    std::span<const byte> leakByteCode, std::span<const byte> splitFitByteCode)
     {
         ScopedSkipHeapCapture skipHeapCapture {};
 
@@ -356,6 +370,8 @@ struct FSRDPreprocessor_Dx12::Impl
                                 Composition::kOutputCount, L"FSRD_Comp_Constants", Composition::kBackBufferCount);
         m_leakShader.Initialize(m_pDev, leakByteCode, sizeof(Leak::Constants), Leak::Input::kCount, Leak::kOutputCount,
                                 L"FSRD_Leak_Constants", Leak::kBackBufferCount);
+        m_splitFitShader.Initialize(m_pDev, splitFitByteCode, sizeof(SplitFit::Constants), SplitFit::Input::kCount,
+                                    SplitFit::kOutputCount, L"FSRD_SplitFit_Constants", SplitFit::kBackBufferCount);
 
         LOG_DEBUG("FSRD interop shaders and resources initialized.");
     }
@@ -403,6 +419,14 @@ struct FSRDPreprocessor_Dx12::Impl
         m_sssHistory[1] = CreateTex(FSRDFormats::SssHistory, L"FSR_Conv_SssHistoryB");
         m_sssRead = 0;
         m_sssWasActive = false;
+
+        // Additive light split (27 Sep)
+        m_splitHistory[0] = CreateTex(FSRDFormats::SplitShare, L"FSR_Conv_SplitShareA");
+        m_splitHistory[1] = CreateTex(FSRDFormats::SplitShare, L"FSR_Conv_SplitShareB");
+        m_splitIntercept = CreateTex(FSRDFormats::SplitIntercept, L"FSR_Conv_SplitIntercept");
+        m_splitRead = 0;
+        m_splitWasActive = false;
+        m_splitCurrent = nullptr;
     }
 
     // depthOnly (25 Sep): the floor is off, so only the linear depth is written; no median, no gradient, and
@@ -564,14 +588,19 @@ struct FSRDPreprocessor_Dx12::Impl
         const bool sssActive = desc.SssSeparation > 0.0f && desc.InSSSGuide != nullptr;
         in.Resources.InSssHistory = m_sssHistory[m_sssRead].Get();
 
+        // Additive light split (27 Sep): the specular share DispatchSplitFit wrote this frame, if it ran
+        in.Resources.InSplitFit = m_splitCurrent;
+        packConstants.AdditiveSeparation = (m_splitCurrent != nullptr) ? desc.AdditiveSeparation : 0.0f;
+
         if (!sssActive)
             packConstants.SssSeparation = 0.0f;
         else if (!m_sssWasActive)
             packConstants.Flags |= UINT(ConvFlags::SssReset);
 
-        // Texture leak views (26 Sep) measure what the denoiser receives, so the packing shader runs its
-        // normal path on those frames; DispatchConversion draws the view afterwards.
-        if (IsLeakView(desc))
+        // Texture leak views (26 Sep) measure what the denoiser receives, and the additive light views (27 Sep)
+        // show the split fit's outputs, so the packing shader runs its normal path on those frames;
+        // DispatchConversion draws the view afterwards.
+        if (IsPostPackingView(desc))
             packConstants.Flags &= ~UINT(ConvFlags::DebugModeMask);
 
         // A null SRV reads as zero, so the shader is safe without this, but the flag keeps
@@ -614,6 +643,67 @@ struct FSRDPreprocessor_Dx12::Impl
                debugMode == uint32_t(ConvFlags::DebugLeakDiffuse);
     }
 
+    // Views drawn after the packing shader ran its normal path (26/27 Sep)
+    static bool IsPostPackingView(const ConversionDesc& desc)
+    {
+        const uint32_t debugMode = desc.Flags & uint32_t(ConvFlags::DebugModeMask);
+        return IsLeakView(desc) || debugMode == uint32_t(ConvFlags::DebugAdditiveLight) ||
+               debugMode == uint32_t(ConvFlags::DebugSpecularShare);
+    }
+
+    // Copies a view over SpecRadiance, the texture a conversion debug view shows. The denoiser is bypassed
+    // on those frames, so nothing else reads SpecRadiance. Both must be in SRV state.
+    void ShowTexture(ID3D12GraphicsCommandList* cmdList, ID3D12Resource* view)
+    {
+        ID3D12Resource* shown = m_out.Resources.SpecRadiance.Get();
+
+        if (view == nullptr || shown == nullptr)
+            return;
+
+        AddBarrier(cmdList, view, kSrvState, D3D12_RESOURCE_STATE_COPY_SOURCE);
+        AddBarrier(cmdList, shown, kSrvState, D3D12_RESOURCE_STATE_COPY_DEST);
+        cmdList->CopyResource(shown, view);
+        AddBarrier(cmdList, view, D3D12_RESOURCE_STATE_COPY_SOURCE, kSrvState);
+        AddBarrier(cmdList, shown, D3D12_RESOURCE_STATE_COPY_DEST, kSrvState);
+    }
+
+    // Additive light split (27 Sep, FSRDSplitFit.hlsl). Runs after the floor seed (it needs this frame's linear
+    // depth) and before the packing shader, which reads the specular share it writes.
+    void DispatchSplitFit(ID3D12GraphicsCommandList* cmdList, const ConversionDesc& desc)
+    {
+        const bool active = desc.AdditiveSeparation > 0.0f;
+
+        if (!active)
+        {
+            m_splitCurrent = nullptr;
+            m_splitWasActive = false;
+            return;
+        }
+
+        SplitFit::Constants constants = { .DstTexSize = desc.RenderSize,
+                                          .Strength = std::clamp(desc.AdditiveSeparation, 0.0f, 1.0f),
+                                          .HistoryAlpha = std::clamp(desc.AdditiveHistoryAlpha, 0.01f, 1.0f),
+                                          .Flags = m_splitWasActive ? 0u : uint32_t(SplitFit::Flags::Reset) };
+
+        SplitFit::Input in = { .Resources = { .InColor = desc.Resources.InColor,
+                                              .InDiffAlbedo = desc.Resources.InDiffAlbedo,
+                                              .InSpecAlbedo = desc.Resources.InSpecAlbedo,
+                                              .InLinearDepth = m_LinearDepth.Get(),
+                                              .InNormals = desc.Resources.InNormals,
+                                              .InMotionVectors = desc.Resources.InMotionVectors,
+                                              .InHistory = m_splitHistory[m_splitRead].Get() } };
+
+        ID3D12Resource* written = m_splitHistory[1 - m_splitRead].Get();
+        std::array<ID3D12Resource*, SplitFit::kOutputCount> out { written, m_splitIntercept.Get() };
+
+        const XMFLOAT2 dispatchSize = { desc.RenderSize.x, desc.RenderSize.y };
+        m_splitFitShader.Dispatch(cmdList, GetAsByteSpan(constants), in.AsArray, out, dispatchSize);
+
+        m_splitCurrent = written;
+        m_splitRead = 1 - m_splitRead;
+        m_splitWasActive = true;
+    }
+
     // Texture leak view (26 Sep): FSRDLeak.hlsl reads the packing shader's outputs and draws into the
     // scratch buffer, which is then copied over SpecRadiance - the texture a conversion debug view shows.
     // The denoiser is bypassed on those frames, so nothing else reads SpecRadiance.
@@ -637,14 +727,7 @@ struct FSRDPreprocessor_Dx12::Impl
         const XMFLOAT2 dispatchSize = { desc.RenderSize.x, desc.RenderSize.y };
         m_leakShader.Dispatch(cmdList, GetAsByteSpan(constants), in.AsArray, out, dispatchSize);
 
-        ID3D12Resource* view = m_outputBuffer1.Get();
-        ID3D12Resource* shown = m_out.Resources.SpecRadiance.Get();
-
-        AddBarrier(cmdList, view, kSrvState, D3D12_RESOURCE_STATE_COPY_SOURCE);
-        AddBarrier(cmdList, shown, kSrvState, D3D12_RESOURCE_STATE_COPY_DEST);
-        cmdList->CopyResource(shown, view);
-        AddBarrier(cmdList, view, D3D12_RESOURCE_STATE_COPY_SOURCE, kSrvState);
-        AddBarrier(cmdList, shown, D3D12_RESOURCE_STATE_COPY_DEST, kSrvState);
+        ShowTexture(cmdList, m_outputBuffer1.Get());
     }
 
     void DispatchConversion(ID3D12GraphicsCommandList* cmdList, const ConversionDesc& desc)
@@ -672,6 +755,9 @@ struct FSRDPreprocessor_Dx12::Impl
         if (floorActive)
             DispatchFloorFilter(cmdList, desc);
 
+        // Additive light split (27 Sep): specular share for the packing shader
+        DispatchSplitFit(cmdList, desc);
+
         // DLSS-RR to FSR-RR conversion
         DispatchPackingShader(cmdList, desc);
 
@@ -686,9 +772,16 @@ struct FSRDPreprocessor_Dx12::Impl
         // The probe texture is back in SRV state after the dispatch
         RecordProbeTexCopy(cmdList);
 
-        // Texture leak views (26 Sep), while the scratch buffers are still in SRV state
+        // Texture leak views (26 Sep), while the scratch buffers are still in SRV state, and the additive light
+        // views (27 Sep)
+        const uint32_t viewMode = desc.Flags & uint32_t(ConvFlags::DebugModeMask);
+
         if (IsLeakView(desc))
             DispatchLeakView(cmdList, desc);
+        else if (viewMode == uint32_t(ConvFlags::DebugAdditiveLight))
+            ShowTexture(cmdList, m_splitCurrent != nullptr ? m_splitIntercept.Get() : nullptr);
+        else if (viewMode == uint32_t(ConvFlags::DebugSpecularShare))
+            ShowTexture(cmdList, m_splitCurrent);
 
         // Transition output buffers to UAV after last composition pass or first init.
         // The denoiser will be writing to these.
@@ -1098,7 +1191,7 @@ FSRDPreprocessor_Dx12::FSRDPreprocessor_Dx12(std::string_view name, ID3D12Device
         m_impl->m_pDev = pDev;
         m_impl->Initialize(GetAsByteSpan(FSRDFloorSeed_cso), GetAsByteSpan(FSRDFloor_cso),
                            GetAsByteSpan(FSRDInputConv_cso), GetAsByteSpan(FSRDOutputComp_cso),
-                           GetAsByteSpan(FSRDLeak_cso));
+                           GetAsByteSpan(FSRDLeak_cso), GetAsByteSpan(FSRDSplitFit_cso));
         m_IsInitialized = true;
     }
     catch (const std::exception& err)
@@ -1254,6 +1347,9 @@ uint64_t FSRDPreprocessor_Dx12::GetGpuMemoryBytes() const
     Add(impl.m_probeTex.Get());
     Add(impl.m_sssHistory[0].Get());
     Add(impl.m_sssHistory[1].Get());
+    Add(impl.m_splitHistory[0].Get());
+    Add(impl.m_splitHistory[1].Get());
+    Add(impl.m_splitIntercept.Get());
 
     for (const auto& slot : impl.m_probeSlots)
         Add(slot.readback.Get());

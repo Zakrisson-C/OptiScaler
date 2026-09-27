@@ -515,6 +515,14 @@ class Config
     // Weight of the current frame in the SSS history. Lower = smoother, slower to follow lighting changes.
     CustomOptional<float> FfxDenoiserSssHistoryAlpha { 0.1f };
 
+    // Additive light split (27 Sep): light that doesn't follow the albedo (fog, haze, a reflection brighter than
+    // the diffuse lighting on a textured surface), found by fitting colour against albedo per window, goes to
+    // the specular lobe instead of being divided by the texture. 0 = off, 1 = full.
+    CustomOptional<float> FfxDenoiserAdditiveSplit { 0.0f };
+
+    // Weight of the current frame in the averaged specular share. Lower = steadier routing, slower to follow.
+    CustomOptional<float> FfxDenoiserAdditiveSplitHistory { 0.2f };
+
     // Diagnostics and input-encoding probes. Requires a denoiser context recreate.
     CustomOptional<bool> FfxDenoiserFsrDebugViews { false };
 
