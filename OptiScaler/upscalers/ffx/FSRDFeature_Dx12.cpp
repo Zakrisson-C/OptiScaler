@@ -257,6 +257,7 @@ enum class DebugModes : uint64_t
     SssDelta = FSRDConvFlags::DebugSssDelta,                   // 26 Sep
     TextureLeakSpecular = FSRDConvFlags::DebugLeakSpecular,    // 26 Sep
     TextureLeakDiffuse = FSRDConvFlags::DebugLeakDiffuse,      // 26 Sep
+    AlbedoFade = FSRDConvFlags::DebugAlbedoFade,               // 27 Sep
 
     CompositionDebugOffset = 16u,
     CompositionDebug = (uint64_t) FSRDCompFlags::Debug << CompositionDebugOffset,
@@ -338,6 +339,7 @@ constexpr auto kDebugModes = std::to_array<ModeNamePair>({
     { "SssDelta", (uint64_t) DebugModes::SssDelta },
     { "TextureLeakSpecular", (uint64_t) DebugModes::TextureLeakSpecular },
     { "TextureLeakDiffuse", (uint64_t) DebugModes::TextureLeakDiffuse },
+    { "AlbedoFade", (uint64_t) DebugModes::AlbedoFade },
 
     { "Signal1", (uint64_t) DebugModes::Signal1 },
     { "Signal2", (uint64_t) DebugModes::Signal2 },
@@ -1318,6 +1320,8 @@ bool FSRDFeatureDx12::ConvertDenoiserBuffers(ID3D12GraphicsCommandList* InComman
     _convDesc.FireflyClampK = cfg.FfxDenoiserFireflyClamp.value_or_default();
     _convDesc.SssSeparation = std::clamp(cfg.FfxDenoiserSssSeparation.value_or_default(), 0.0f, 1.0f);
     _convDesc.SssHistoryAlpha = cfg.FfxDenoiserSssHistoryAlpha.value_or_default();
+    _convDesc.AlbedoFadeStart = cfg.FfxDenoiserAlbedoFadeStart.value_or_default();
+    _convDesc.AlbedoFadeEnd = cfg.FfxDenoiserAlbedoFadeEnd.value_or_default();
     _convDesc.SplitPriorStrength = cfg.FfxDenoiserSplitPrior.value_or_default();
     _convDesc.RoughnessProbe = cfg.FfxDenoiserRoughnessProbe.value_or_default();
 

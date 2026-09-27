@@ -94,6 +94,7 @@ class FSRDPreprocessor_Dx12
         DebugSssDelta = 31 << 17 | Debug,          // SSS contribution routed around the denoiser (26 Sep)
         DebugLeakSpecular = 32 << 17 | Debug,      // texture leak into the specular lighting (26 Sep, FSRDLeak)
         DebugLeakDiffuse = 33 << 17 | Debug,       // texture leak into the diffuse lighting (26 Sep, FSRDLeak)
+        DebugAlbedoFade = 34 << 17 | Debug,        // distance fade of the albedo division (27 Sep)
     };
 
     enum class CompFlags : uint32_t
@@ -213,6 +214,11 @@ class FSRDPreprocessor_Dx12
 
         // Weight of the current frame in the SSS history. 1 = no history.
         float SssHistoryAlpha = 0.1f;
+
+        // Distance fade of the albedo division (27 Sep), linear depth: beyond End the divisor (and the stored
+        // albedo) is the local mean albedo, so fog isn't divided by the surface texture. End <= Start = off.
+        float AlbedoFadeStart = 0.0f;
+        float AlbedoFadeEnd = 0.0f;
 
         // Biases the Mode 2 split toward specular on smooth surfaces. 0 is bit-identical.
         float SplitPriorStrength;

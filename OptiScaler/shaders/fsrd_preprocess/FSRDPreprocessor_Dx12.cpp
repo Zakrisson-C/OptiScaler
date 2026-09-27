@@ -553,7 +553,9 @@ struct FSRDPreprocessor_Dx12::Impl
                                                 .FireflyClampK = desc.FireflyClampK,
                                                 .SssSeparation = desc.SssSeparation,
                                                 .ProjMatrix = desc.ProjMatrix,
-                                                .SssHistoryAlpha = std::clamp(desc.SssHistoryAlpha, 0.01f, 1.0f) };
+                                                .SssHistoryAlpha = std::clamp(desc.SssHistoryAlpha, 0.01f, 1.0f),
+                                                .AlbedoFadeStart = desc.AlbedoFadeStart,
+                                                .AlbedoFadeEnd = desc.AlbedoFadeEnd };
 
         in.Resources.InBlurColor = m_smoothFloor;
         in.Resources.InPrevLinearDepth = m_PrevLinearDepth.Get();
