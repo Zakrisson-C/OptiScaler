@@ -1676,6 +1676,18 @@ void FSRDFeatureDx12::PublishDiagnostics(const NVSDK_NGX_Parameter& inParams, bo
     AddInput("ColorBeforeFog", NVSDK_NGX_Parameter_DLSSD_ColorBeforeFog);
     AddInput("ColorAfterFog", NVSDK_NGX_Parameter_DLSSD_ColorAfterFog);
     AddInput("Alpha", NVSDK_NGX_Parameter_DLSSD_Alpha);
+
+    // 27 Sep: the rest of the transparency family and the remaining DLSS-RR guides, to find out what
+    // Cyberpunk's DLSSDTransparentGuide option actually hands over.
+    AddInput("TransparencyLayerOpacity", NVSDK_NGX_Parameter_DLSS_TransparencyLayerOpacity);
+    AddInput("TransparencyLayerMvecs", NVSDK_NGX_Parameter_DLSS_TransparencyLayerMvecs);
+    AddInput("TransparencyMask", NVSDK_NGX_Parameter_TransparencyMask);
+    AddInput("SpecularRayDirection", NVSDK_NGX_Parameter_DLSSD_SpecularRayDirection);
+    AddInput("SpecularRayDirHitDist", NVSDK_NGX_Parameter_DLSSD_SpecularRayDirectionHitDistance);
+    AddInput("RefractionGuide", NVSDK_NGX_Parameter_DLSSD_ScreenSpaceRefractionGuide);
+    AddInput("ColorBeforeRefraction", NVSDK_NGX_Parameter_DLSSD_ColorBeforeScreenSpaceRefraction);
+    AddInput("ColorAfterRefraction", NVSDK_NGX_Parameter_DLSSD_ColorAfterScreenSpaceRefraction);
+    AddInput("DepthOfFieldGuide", NVSDK_NGX_Parameter_DLSSD_DepthOfFieldGuide);
     AddInput("Output", NVSDK_NGX_Parameter_Output);
 
     static constexpr std::array<const char*, DenoiserConfiguration::kCount> kTuningNames = {
