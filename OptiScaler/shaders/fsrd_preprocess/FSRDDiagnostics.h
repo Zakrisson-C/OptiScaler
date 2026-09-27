@@ -110,6 +110,7 @@ struct InputInfo
     uint32_t format = 0; // DXGI_FORMAT
     uint64_t width = 0;
     uint32_t height = 0;
+    bool opaque = false; // 27 Sep: found by name only (a parameter the list doesn't know); not inspected
 };
 
 struct FrameInfo

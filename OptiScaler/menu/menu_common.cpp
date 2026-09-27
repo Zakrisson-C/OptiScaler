@@ -2971,8 +2971,9 @@ std::string FsrdBuildReport(Config* config, State& state, const FSRD::ProbeReado
     for (const auto& input : inputs)
     {
         Line(std::format("  {}: {}", input.name,
-                         input.present ? std::format("{} {}x{}", FsrdFormat(input.format), input.width, input.height)
-                                       : std::string("missing")));
+                         input.opaque    ? std::string("set (not in the known list)")
+                         : input.present ? std::format("{} {}x{}", FsrdFormat(input.format), input.width, input.height)
+                                         : std::string("missing")));
     }
 
     Line(
@@ -3428,6 +3429,12 @@ void MenuCommon::RenderFsrdDebugTools(RenderMenuContext& ctx)
                 if (!input.present)
                 {
                     ImGui::TextDisabled("missing");
+                    continue;
+                }
+
+                if (input.opaque)
+                {
+                    ImGui::TextUnformatted("set (not in the known list)");
                     continue;
                 }
 

@@ -1,6 +1,7 @@
 #pragma once
 #include "FFXFeature_Dx12.h"
 #include "shaders/fsrd_preprocess/FSRDPreprocessor_Dx12.h"
+#include "shaders/fsrd_preprocess/FSRDDiagnostics.h"
 #include "fsr-rr/ffx_denoiser.h"
 #include <DirectXMath.h>
 #include <atomic>
@@ -180,7 +181,11 @@ class FSRDFeatureDx12 : public FFXFeatureDx12
     uint64_t _memShim = 0;
 
     void QueryContextMemory(); // denoiser and shim allocations, once after creation
-    void UpdateVideoMemory();  // DXGI usage and budget, about once a second
+
+    // Game inputs list for the diagnostics panel (27 Sep), rebuilt every 30 frames
+    std::vector<FSRD::InputInfo> _cachedInputs;
+    uint32_t _inputsCountdown = 0;
+    void UpdateVideoMemory(); // DXGI usage and budget, about once a second
 
     // Camera movement over the last frame (diagnostics, 24 Sep)
     float _lastCamMove = 0.0f;

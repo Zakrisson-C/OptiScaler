@@ -1627,11 +1627,20 @@ void FSRDFeatureDx12::PublishDiagnostics(const NVSDK_NGX_Parameter& inParams, bo
     frame.contextStarts = _contextStartCount;
     frame.gameResets = _gameResetCount;
 
-    // Every DLSS-RR input the game hands over, consumed or not, with its format
+    // Every DLSS-RR input the game hands over, consumed or not, with its format. 27 Sep: rebuilt every 30 frames
+    // (each lookup of a missing key is a trace log line in OptiScaler's parameter table).
     std::vector<FSRD::InputInfo> inputs;
+    std::unordered_set<std::string> listedKeys;
+    const bool refreshInputs = (_inputsCountdown == 0);
+    _inputsCountdown = refreshInputs ? 30 : _inputsCountdown - 1;
 
     const auto AddInput = [&](const char* label, const char* key)
     {
+        listedKeys.insert(key);
+
+        if (!refreshInputs)
+            return;
+
         FSRD::InputInfo info;
         info.name = label;
         ID3D12Resource* resource = nullptr;
@@ -1690,6 +1699,29 @@ void FSRDFeatureDx12::PublishDiagnostics(const NVSDK_NGX_Parameter& inParams, bo
     AddInput("DepthOfFieldGuide", NVSDK_NGX_Parameter_DLSSD_DepthOfFieldGuide);
     AddInput("Output", NVSDK_NGX_Parameter_Output);
 
+    // 27 Sep: every other pointer the game sets, under its raw parameter name, so an input the list above
+    // doesn't know by name still shows up. Not dereferenced: a pointer parameter needn't be a resource.
+    if (const auto* ownParams = dynamic_cast<const NVNGX_Parameters*>(&inParams); refreshInputs && ownParams)
+    {
+        for (const std::string& key : ownParams->enumerate())
+        {
+            void* value = nullptr;
+
+            if (listedKeys.contains(key) || inParams.Get(key.c_str(), &value) != NVSDK_NGX_Result_Success ||
+                value == nullptr)
+                continue;
+
+            FSRD::InputInfo info;
+            info.name = key;
+            info.present = true;
+            info.opaque = true;
+            inputs.push_back(std::move(info));
+        }
+    }
+
+    if (refreshInputs)
+        _cachedInputs = inputs;
+
     static constexpr std::array<const char*, DenoiserConfiguration::kCount> kTuningNames = {
         "Cross Bilateral Normal Strength", "Temporal Stability Bias",    "Max Radiance",
         "Radiance Clip Deviation",         "Gaussian Kernel Relaxation", "Disocclusion Threshold"
@@ -1699,7 +1731,7 @@ void FSRDFeatureDx12::PublishDiagnostics(const NVSDK_NGX_Parameter& inParams, bo
     std::scoped_lock lock(diagnostics.Mutex);
 
     diagnostics.Frame = std::move(frame);
-    diagnostics.Inputs = std::move(inputs);
+    diagnostics.Inputs = _cachedInputs;
 
     for (int i = 0; i < DenoiserConfiguration::kCount; i++)
     {
