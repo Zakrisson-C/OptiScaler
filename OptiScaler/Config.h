@@ -515,6 +515,23 @@ class Config
     // Weight of the current frame in the SSS history. Lower = smoother, slower to follow lighting changes.
     CustomOptional<float> FfxDenoiserSssHistoryAlpha { 0.1f };
 
+    // SSS re-blur (28 Sep): instead of adding the averaged SSS contribution back, blur the denoised colour on the
+    // SSS pixels with a Gaussian of this world-space width, as the game does before denoising on the NRD path.
+    // Needs SSS Separation above 0 (it replaces the separated part). Off = the history path above.
+    CustomOptional<bool> FfxDenoiserSssReblur { false };
+
+    // Gaussian sigma of the widest (red) channel, millimetres.
+    CustomOptional<float> FfxDenoiserSssRadius { 2.0f };
+
+    // 0 = no blur, 1 = full. The fit's strength is the value that matches the game's blur.
+    CustomOptional<float> FfxDenoiserSssReblurStrength { 1.0f };
+
+    // 0 = the same width for all channels, 1 = green and blue at 0.4 and 0.3 of red's.
+    CustomOptional<float> FfxDenoiserSssFalloff { 0.0f };
+
+    // Fit the kernel against the game's SSS guide every frame and show strength and residual in the menu.
+    CustomOptional<bool> FfxDenoiserSssFit { false };
+
     // Additive light split (27 Sep): light that doesn't follow the albedo (fog, haze, a reflection brighter than
     // the diffuse lighting on a textured surface), found by fitting colour against albedo per window, goes to
     // the specular lobe instead of being divided by the texture. 0 = off, 1 = full.

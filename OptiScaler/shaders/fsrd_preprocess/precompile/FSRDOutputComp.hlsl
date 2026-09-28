@@ -4,7 +4,7 @@
     "RootFlags(0), " \
     "CBV(b0), " \
     "DescriptorTable(SRV(t0, numDescriptors = 8), visibility = SHADER_VISIBILITY_ALL), " \
-    "DescriptorTable(UAV(u0, numDescriptors = 1), visibility = SHADER_VISIBILITY_ALL), " \
+    "DescriptorTable(UAV(u0, numDescriptors = 2), visibility = SHADER_VISIBILITY_ALL), " \
     "StaticSampler(s0, " \
         "filter = FILTER_MIN_MAG_MIP_LINEAR, " \
         "addressU = TEXTURE_ADDRESS_CLAMP, " \
@@ -36,6 +36,9 @@ DECLARE_LDS_ARRAY_2D(half4, g_DenoisedColor, KERNEL_SIZE);
 #define FLAGS_SCALE_SRC                 (1 << 1)
 // A/B (25 Sep): no Correlation Bias raw blend on pixels the game's SSS guide marks.
 #define FLAGS_SSS_NO_RAW_BLEND          (1 << 3)
+// SSS re-blur (28 Sep, FSRDSssBlur.hlsl): write the denoised colour of SSS pixels, before particles, to
+// OutSssSource for the re-blur passes that run after this one.
+#define FLAGS_SSS_RESYNTH               (1 << 4)
 // FLAGS_MODE_2_SIGNAL (1 << 2) removed (transplant, 22 Sep): the split-signal blend below is now
 // unconditional - denoiser 1.2 has no combined-signal shape left to select away from. Found by
 // reading this file fresh this pass; it wasn't in the transplant plan's original §6f scope list.
@@ -49,6 +52,8 @@ DECLARE_LDS_ARRAY_2D(half4, g_DenoisedColor, KERNEL_SIZE);
 #define FLAGS_DEBUG_DENOISER_OUTPUT     (3 << 17 | FLAGS_DEBUG)
 #define FLAGS_DEBUG_SPECULAR_COLOR      (4 << 17 | FLAGS_DEBUG)
 #define FLAGS_DEBUG_DIFFUSE_COLOR       (5 << 17 | FLAGS_DEBUG)
+// 28 Sep. Drawn by the SSS re-blur passes after this one; the composition itself runs its normal path.
+#define FLAGS_DEBUG_SSS_FIT             (6 << 17 | FLAGS_DEBUG)
 
 // Specular signal
 Texture2D<half4> InDenoisedSignal1 : register(t0); // Specular denoiser output
@@ -66,6 +71,8 @@ Texture2D<half4> InColorBeforeParticles : register(t6);
 Texture2D<float> InSSSGuide : register(t7);
 
 RWTexture2D<half4> OutColor : register(u0);
+// SSS re-blur (28 Sep): the denoised colour before the blur, SSS pixels only. Null unless FLAGS_SSS_RESYNTH.
+RWTexture2D<half4> OutSssSource : register(u1);
 
 SamplerState LinearSampler : register(s0);
 
@@ -276,7 +283,7 @@ void CSMain(uint3 groupID : SV_GroupID, uint3 gtID : SV_GroupThreadID)
             rawWeight = 0.0h;
         
         [branch]
-        if (IsSet(FLAGS_DEBUG))
+        if (IsSet(FLAGS_DEBUG) && GetDebugMode() != FLAGS_DEBUG_SSS_FIT)
         {
             switch (GetDebugMode())
             {
@@ -308,6 +315,11 @@ void CSMain(uint3 groupID : SV_GroupID, uint3 gtID : SV_GroupThreadID)
             const half3 minColor = 0.5f * denoisedColor.rgb;
             const half3 maxColor = 1.5f * denoisedColor.rgb;
             outColor.rgb = clamp(outColor.rgb, minColor, maxColor);
+
+            // SSS re-blur (28 Sep): the colour the re-blur passes blur, before the particle layer they put back
+            [branch]
+            if (IsSet(FLAGS_SSS_RESYNTH) && InSSSGuide[px] != 0.0f)
+                OutSssSource[px] = half4(outColor.rgb, 1.0h);
             
             // Optional discrete premultiplied alpha buffer
             half4 particles = GetSafeFP16(InColorBeforeParticles[px]);

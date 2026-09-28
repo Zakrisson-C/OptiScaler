@@ -378,10 +378,66 @@ union Input
 constexpr UINT kOutputCount = 1;
 } // namespace Leak
 
+// SSS re-blur (28 Sep, FSRDSssBlur.hlsl): after composition, a separable Gaussian of a world-space width over the
+// pixels the game's SSS guide marks, applied to the denoised colour; optionally the same kernel on the noisy colour
+// before the game's blur, to fit radius and strength against the guide.
+namespace SssBlur
+{
+// Two dispatches per frame (horizontal, vertical), three frames in flight, with margin
+constexpr UINT kBackBufferCount = 12;
+
+enum class Flags : uint32_t
+{
+    None = 0,
+    Vertical = (1 << 0), // second pass
+    Apply = (1 << 1),    // blur the denoised colour, write it over the composition output
+    Fit = (1 << 2),      // blur the noisy colour too, reduce the fit terms
+    View = (1 << 3),     // vertical pass: draw the fit residual over the whole frame
+};
+
+struct alignas(16) Constants
+{
+    XMFLOAT4 DstTexSize;   // XY = size, ZW = 1 / size
+    XMFLOAT3 ChannelScale; // sigma per channel relative to red
+    float SigmaScale;      // sigma (m) * focal length (px)
+    float Strength;        // 0 = no blur, 1 = full
+    float DepthTolerance;  // m, before the 1% of depth the shader adds
+    uint32_t Flags;
+    float _Padding;
+};
+
+static_assert(sizeof(Constants) == 48, "SssBlur::Constants out of sync with CB_SssBlur");
+
+union Input
+{
+    struct Data
+    {
+        ID3D12Resource* InBlurSrc;
+        ID3D12Resource* InFitSrc;
+        ID3D12Resource* InColor;
+        ID3D12Resource* InSSSGuide;
+        ID3D12Resource* InLinearDepth;
+        ID3D12Resource* InColorBeforeParticles;
+        ID3D12Resource* InSssSource;
+    };
+
+    static constexpr uint32_t kCount = sizeof(Data) / sizeof(ID3D12Resource*);
+
+    Data Resources;
+
+    ID3D12Resource* AsArray[kCount];
+};
+
+constexpr UINT kOutputCount = 2;
+
+// One fit texel per thread group
+constexpr UINT kGroupSize = 8;
+} // namespace SssBlur
+
 namespace Composition
 {
 constexpr UINT kBackBufferCount = 7;
-constexpr UINT kOutputCount = 1;
+constexpr UINT kOutputCount = 2; // output colour, SSS re-blur source (28 Sep, null unless the re-blur is on)
 
 struct alignas(16) Constants
 {

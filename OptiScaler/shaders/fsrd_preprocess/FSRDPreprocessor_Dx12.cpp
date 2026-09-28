@@ -9,6 +9,7 @@
 #include "precompile/FSRDOutputComp_Shader.h"
 #include "precompile/FSRDLeak_Shader.h"
 #include "precompile/FSRDSplitFit_Shader.h"
+#include "precompile/FSRDSssBlur_Shader.h"
 
 #include "dx12/ffx_api_dx12.h"
 #include "fsr-rr/ffx_denoiser.h"
@@ -72,6 +73,12 @@ constexpr DXGI_FORMAT SssHistory = DXGI_FORMAT_R16G16B16A16_FLOAT;
 // Additive light split (27 Sep): specular share rgb + linear depth a (history), intercept rgb (view)
 constexpr DXGI_FORMAT SplitShare = DXGI_FORMAT_R16G16B16A16_FLOAT;
 constexpr DXGI_FORMAT SplitIntercept = DXGI_FORMAT_R16G16B16A16_FLOAT;
+
+// SSS re-blur (28 Sep): the denoised colour before the blur, the horizontal pass results, the fit terms
+constexpr DXGI_FORMAT SssSource = DXGI_FORMAT_R16G16B16A16_FLOAT;
+constexpr DXGI_FORMAT SssBlurH = DXGI_FORMAT_R16G16B16A16_FLOAT;
+constexpr DXGI_FORMAT SssFitH = DXGI_FORMAT_R16G16B16A16_FLOAT;
+constexpr DXGI_FORMAT SssFitTiles = DXGI_FORMAT_R32G32B32A32_FLOAT;
 } // namespace FSRDFormats
 
 namespace FSRDProbe
@@ -284,6 +291,7 @@ struct FSRDPreprocessor_Dx12::Impl
     ComputeState m_compShader;
     ComputeState m_leakShader;     // texture leak views (26 Sep), debug only
     ComputeState m_splitFitShader; // additive light split (27 Sep)
+    ComputeState m_sssBlurShader;  // SSS re-blur (28 Sep)
 
     UINT m_maxWidth = 0;
     UINT m_maxHeight = 0;
@@ -315,6 +323,39 @@ struct FSRDPreprocessor_Dx12::Impl
 
     // A/B, audit finding 3: albedo textures created as RGBA16_FLOAT
     bool m_albedo16 = false;
+
+    // SSS re-blur (28 Sep, FSRDSssBlur.hlsl). Created on first use at the current maximum render size, released on
+    // a resize; a feature that never turns the re-blur on never allocates them.
+    ComPtr<ID3D12Resource> m_sssSource;   // denoised colour before the blur, SSS pixels (composition u1)
+    ComPtr<ID3D12Resource> m_sssBlurH;    // horizontal pass: blurred denoised colour
+    ComPtr<ID3D12Resource> m_sssFitH;     // horizontal pass: blurred noisy colour (fit only)
+    ComPtr<ID3D12Resource> m_sssFitTiles; // fit terms, one texel per 8x8 group (fit only)
+    bool m_sssCreateFailed = false;       // don't retry every frame; reset on a resize
+    bool m_sssFitCreateFailed = false;
+
+    // Fit readback ring: each slot is mapped kSssFitRing frames after its copy was recorded (no fence, the same
+    // margin as the pixel probe).
+    struct SssFitSlot
+    {
+        ComPtr<ID3D12Resource> readback;
+        bool pending = false;
+        UINT tilesX = 0;
+        UINT tilesY = 0;
+        UINT rowPitch = 0;
+        float radiusMm = 0.0f;
+        float falloff = 0.0f;
+    };
+
+    static constexpr UINT kSssFitRing = 6;
+    std::array<SssFitSlot, kSssFitRing> m_sssFitSlots;
+    uint64_t m_sssFitFrame = 0;
+    uint64_t m_sssFitReadouts = 0;
+
+    // Running average of the per-pixel fit means (g d, d d, g g), restarted when radius or falloff change
+    double m_sssFitAverage[3] = {};
+    uint32_t m_sssFitSamples = 0;
+    float m_sssFitAvgRadius = -1.0f;
+    float m_sssFitAvgFalloff = -1.0f;
 
     // Pixel probe (24 Sep) --------------------------------------------------------------------
     //
@@ -352,7 +393,8 @@ struct FSRDPreprocessor_Dx12::Impl
 
     void Initialize(std::span<const byte> blSeedByteCode, std::span<const byte> blPyramidByteCode,
                     std::span<const byte> convByteCode, std::span<const byte> compByteCode,
-                    std::span<const byte> leakByteCode, std::span<const byte> splitFitByteCode)
+                    std::span<const byte> leakByteCode, std::span<const byte> splitFitByteCode,
+                    std::span<const byte> sssBlurByteCode)
     {
         ScopedSkipHeapCapture skipHeapCapture {};
 
@@ -372,6 +414,8 @@ struct FSRDPreprocessor_Dx12::Impl
                                 L"FSRD_Leak_Constants", Leak::kBackBufferCount);
         m_splitFitShader.Initialize(m_pDev, splitFitByteCode, sizeof(SplitFit::Constants), SplitFit::Input::kCount,
                                     SplitFit::kOutputCount, L"FSRD_SplitFit_Constants", SplitFit::kBackBufferCount);
+        m_sssBlurShader.Initialize(m_pDev, sssBlurByteCode, sizeof(SssBlur::Constants), SssBlur::Input::kCount,
+                                   SssBlur::kOutputCount, L"FSRD_SssBlur_Constants", SssBlur::kBackBufferCount);
 
         LOG_DEBUG("FSRD interop shaders and resources initialized.");
     }
@@ -427,6 +471,112 @@ struct FSRDPreprocessor_Dx12::Impl
         m_splitRead = 0;
         m_splitWasActive = false;
         m_splitCurrent = nullptr;
+
+        // SSS re-blur (28 Sep): recreated at the new size on next use
+        ReleaseSssBlurResources();
+    }
+
+    void ReleaseSssBlurResources()
+    {
+        m_sssSource.Reset();
+        m_sssBlurH.Reset();
+        m_sssFitH.Reset();
+        m_sssFitTiles.Reset();
+        m_sssCreateFailed = false;
+        m_sssFitCreateFailed = false;
+
+        for (auto& slot : m_sssFitSlots)
+        {
+            slot.readback.Reset();
+            slot.pending = false;
+        }
+    }
+
+    // SSS re-blur (28 Sep). Returns false if the textures can't be created; the re-blur then stays off (and the
+    // failure is logged once, until the next resize). The fit's own resources are optional on top: m_sssFitTiles
+    // stays null if they fail.
+    bool EnsureSssBlurResources(bool fit)
+    {
+        if (!m_maxWidth || !m_maxHeight)
+            return false;
+
+        ScopedSkipHeapCapture skipHeapCapture {};
+
+        if (!m_sssBlurH)
+        {
+            if (m_sssCreateFailed)
+                return false;
+
+            try
+            {
+                m_sssSource = CreateTexture2D(m_pDev, m_maxWidth, m_maxHeight, FSRDFormats::SssSource,
+                                              L"FSR_Conv_SssSource", kSrvState);
+                m_sssBlurH = CreateTexture2D(m_pDev, m_maxWidth, m_maxHeight, FSRDFormats::SssBlurH,
+                                             L"FSR_Conv_SssBlurH", kSrvState);
+            }
+            catch (const std::exception& err)
+            {
+                m_sssSource.Reset();
+                m_sssBlurH.Reset();
+                m_sssCreateFailed = true;
+                LOG_WARN("FSR-RR SSS re-blur unavailable: {}", err.what());
+                return false;
+            }
+        }
+
+        if (fit && !m_sssFitTiles && !m_sssFitCreateFailed)
+        {
+            try
+            {
+                const UINT tilesX = (m_maxWidth + SssBlur::kGroupSize - 1) / SssBlur::kGroupSize;
+                const UINT tilesY = (m_maxHeight + SssBlur::kGroupSize - 1) / SssBlur::kGroupSize;
+                const UINT64 rowPitch = FSRDProbe::AlignUp(UINT64(tilesX) * 16, D3D12_TEXTURE_DATA_PITCH_ALIGNMENT);
+
+                ComPtr<ID3D12Resource> fitH = CreateTexture2D(m_pDev, m_maxWidth, m_maxHeight, FSRDFormats::SssFitH,
+                                                              L"FSR_Conv_SssFitH", kSrvState);
+                ComPtr<ID3D12Resource> tiles = CreateTexture2D(m_pDev, tilesX, tilesY, FSRDFormats::SssFitTiles,
+                                                               L"FSR_Conv_SssFitTiles", kSrvState);
+
+                D3D12_HEAP_PROPERTIES heapProps = { D3D12_HEAP_TYPE_READBACK };
+                D3D12_RESOURCE_DESC bufferDesc = {};
+                bufferDesc.Dimension = D3D12_RESOURCE_DIMENSION_BUFFER;
+                bufferDesc.Width = rowPitch * tilesY;
+                bufferDesc.Height = 1;
+                bufferDesc.DepthOrArraySize = 1;
+                bufferDesc.MipLevels = 1;
+                bufferDesc.SampleDesc.Count = 1;
+                bufferDesc.Layout = D3D12_TEXTURE_LAYOUT_ROW_MAJOR;
+                bufferDesc.Flags = D3D12_RESOURCE_FLAG_NONE;
+
+                std::array<ComPtr<ID3D12Resource>, kSssFitRing> readbacks;
+
+                for (auto& readback : readbacks)
+                {
+                    ThrowIfFailed(m_pDev->CreateCommittedResource(&heapProps, D3D12_HEAP_FLAG_NONE, &bufferDesc,
+                                                                  D3D12_RESOURCE_STATE_COPY_DEST, nullptr,
+                                                                  IID_PPV_ARGS(&readback)),
+                                  "Failed to create SSS fit readback buffer");
+
+                    readback->SetName(L"FSR_Conv_SssFitReadback");
+                }
+
+                for (size_t i = 0; i < readbacks.size(); i++)
+                {
+                    m_sssFitSlots[i].readback = readbacks[i];
+                    m_sssFitSlots[i].pending = false;
+                }
+
+                m_sssFitH = fitH;
+                m_sssFitTiles = tiles;
+            }
+            catch (const std::exception& err)
+            {
+                m_sssFitCreateFailed = true;
+                LOG_WARN("FSR-RR SSS re-blur fit unavailable: {}", err.what());
+            }
+        }
+
+        return true;
     }
 
     // depthOnly (25 Sep): the floor is off, so only the linear depth is written; no median, no gradient, and
@@ -800,6 +950,28 @@ struct FSRDPreprocessor_Dx12::Impl
                                              .CorrelationBias = desc.CorrelationBias,
                                              .Flags = UINT(desc.Flags) };
 
+        // SSS re-blur (28 Sep). Runs on the normal composition and on its own fit view; any other composition
+        // view shows something else, so it stays off there.
+        const uint32_t compDebug = desc.Flags & uint32_t(CompFlags::DebugModeMask);
+        const bool sssView = compDebug == uint32_t(CompFlags::DebugSssFit);
+        const bool otherView = (desc.Flags & uint32_t(CompFlags::Debug)) != 0 && !sssView;
+        const bool sssUsable =
+            !otherView && desc.InSSSGuide != nullptr && desc.InRawColor != nullptr && desc.FocalLengthPx > 0.0f;
+
+        bool sssApply = sssUsable && desc.SssApply;
+        bool sssFit = sssUsable && (desc.SssFit || sssView);
+
+        if ((sssApply || sssFit) && !EnsureSssBlurResources(sssFit))
+        {
+            sssApply = false;
+            sssFit = false;
+        }
+
+        sssFit = sssFit && m_sssFitTiles != nullptr;
+
+        if (sssApply)
+            constants.Flags |= uint32_t(CompFlags::SssResynth);
+
         // Transition denoiser output buffers to SRV for composition
         std::array<ID3D12Resource*, 2> buffers = { m_outputBuffer1.Get(), m_outputBuffer2.Get() };
         AddBarriers(cmdList, buffers, kUavState, kSrvState);
@@ -818,14 +990,222 @@ struct FSRDPreprocessor_Dx12::Impl
                              .InColorBeforeParticles = desc.InColorBeforeParticles,
                              .InSSSGuide = desc.InSSSGuide };
 
-        std::array<ID3D12Resource*, 1> uavs { m_out.Resources.Motion.Get() };
+        std::array<ID3D12Resource*, Composition::kOutputCount> uavs { m_out.Resources.Motion.Get(),
+                                                                      sssApply ? m_sssSource.Get() : nullptr };
         const std::span<const byte> cbData((const byte*) &constants, sizeof(constants));
         const XMFLOAT2 dstDim = { constants.DstTexSize.x, constants.DstTexSize.y };
 
         m_compShader.Dispatch(cmdList, cbData, inputs.AsArray, uavs, dstDim, true);
 
+        if (sssApply || sssFit)
+            DispatchSssBlur(cmdList, desc, sssApply, sssFit, sssView);
+
         // Denoiser outputs, composition output and stored albedos are all in SRV state here
         RecordProbeBoxCopies(cmdList);
+    }
+
+    // SSS re-blur (28 Sep, FSRDSssBlur.hlsl): horizontal pass into m_sssBlurH (and m_sssFitH), vertical pass over
+    // the composition output (and the fit terms into m_sssFitTiles).
+    void DispatchSssBlur(ID3D12GraphicsCommandList* cmdList, const CompositionDesc& desc, bool apply, bool fit,
+                         bool view)
+    {
+        const float radiusMm = std::clamp(desc.SssRadiusMm, 0.05f, 50.0f);
+        const float falloff = std::clamp(desc.SssFalloff, 0.0f, 1.0f);
+        const float sigmaM = radiusMm * 1e-3f;
+
+        // Red scatters furthest in skin; at falloff 1 green and blue are close to the usual separable-SSS profile.
+        SssBlur::Constants constants = {
+            .DstTexSize = desc.DstTexSize,
+            .ChannelScale = { 1.0f, 1.0f + (0.4f - 1.0f) * falloff, 1.0f + (0.3f - 1.0f) * falloff },
+            .SigmaScale = sigmaM * desc.FocalLengthPx,
+            .Strength = std::clamp(desc.SssStrength, 0.0f, 2.0f),
+            .DepthTolerance = 6.0f * sigmaM,
+        };
+
+        uint32_t flags = 0;
+
+        if (apply)
+            flags |= uint32_t(SssBlur::Flags::Apply);
+
+        if (fit)
+            flags |= uint32_t(SssBlur::Flags::Fit);
+
+        const XMFLOAT2 dispatchSize = { desc.DstTexSize.x, desc.DstTexSize.y };
+
+        // Horizontal
+        {
+            constants.Flags = flags;
+
+            SssBlur::Input in = { .Resources = { .InBlurSrc = m_sssSource.Get(),
+                                                 .InFitSrc = nullptr,
+                                                 .InColor = desc.InRawColor,
+                                                 .InSSSGuide = desc.InSSSGuide,
+                                                 .InLinearDepth = m_LinearDepth.Get(),
+                                                 .InColorBeforeParticles = nullptr,
+                                                 .InSssSource = nullptr } };
+
+            std::array<ID3D12Resource*, SssBlur::kOutputCount> out { m_sssBlurH.Get(),
+                                                                     fit ? m_sssFitH.Get() : nullptr };
+
+            m_sssBlurShader.Dispatch(cmdList, GetAsByteSpan(constants), in.AsArray, out, dispatchSize);
+        }
+
+        // Vertical
+        {
+            constants.Flags = flags | uint32_t(SssBlur::Flags::Vertical) | (view ? uint32_t(SssBlur::Flags::View) : 0u);
+
+            SssBlur::Input in = { .Resources = { .InBlurSrc = m_sssBlurH.Get(),
+                                                 .InFitSrc = fit ? m_sssFitH.Get() : nullptr,
+                                                 .InColor = desc.InRawColor,
+                                                 .InSSSGuide = desc.InSSSGuide,
+                                                 .InLinearDepth = m_LinearDepth.Get(),
+                                                 .InColorBeforeParticles = desc.InColorBeforeParticles,
+                                                 .InSssSource = m_sssSource.Get() } };
+
+            std::array<ID3D12Resource*, SssBlur::kOutputCount> out { m_out.Resources.Motion.Get(),
+                                                                     fit ? m_sssFitTiles.Get() : nullptr };
+
+            m_sssBlurShader.Dispatch(cmdList, GetAsByteSpan(constants), in.AsArray, out, dispatchSize);
+        }
+
+        if (fit)
+            RecordSssFitCopy(cmdList, desc, radiusMm, falloff);
+    }
+
+    // Copies this frame's fit terms into the next readback slot, after reading that slot's previous copy
+    // (recorded kSssFitRing frames ago).
+    void RecordSssFitCopy(ID3D12GraphicsCommandList* cmdList, const CompositionDesc& desc, float radiusMm,
+                          float falloff)
+    {
+        SssFitSlot& slot = m_sssFitSlots[m_sssFitFrame % kSssFitRing];
+        m_sssFitFrame++;
+
+        if (slot.pending)
+        {
+            ReadSssFitSlot(slot);
+            slot.pending = false;
+        }
+
+        if (!slot.readback)
+            return;
+
+        const UINT width = UINT(desc.DstTexSize.x);
+        const UINT height = UINT(desc.DstTexSize.y);
+        const UINT tilesX = (width + SssBlur::kGroupSize - 1) / SssBlur::kGroupSize;
+        const UINT tilesY = (height + SssBlur::kGroupSize - 1) / SssBlur::kGroupSize;
+        const D3D12_RESOURCE_DESC tilesDesc = m_sssFitTiles->GetDesc();
+
+        if (tilesX == 0 || tilesY == 0 || tilesX > tilesDesc.Width || tilesY > tilesDesc.Height)
+            return;
+
+        slot.tilesX = tilesX;
+        slot.tilesY = tilesY;
+        slot.rowPitch = UINT(FSRDProbe::AlignUp(UINT64(tilesX) * 16, D3D12_TEXTURE_DATA_PITCH_ALIGNMENT));
+        slot.radiusMm = radiusMm;
+        slot.falloff = falloff;
+
+        AddBarrier(cmdList, m_sssFitTiles.Get(), kSrvState, D3D12_RESOURCE_STATE_COPY_SOURCE);
+
+        D3D12_TEXTURE_COPY_LOCATION dst = {};
+        dst.pResource = slot.readback.Get();
+        dst.Type = D3D12_TEXTURE_COPY_TYPE_PLACED_FOOTPRINT;
+        dst.PlacedFootprint.Offset = 0;
+        dst.PlacedFootprint.Footprint.Format = FSRDFormats::SssFitTiles;
+        dst.PlacedFootprint.Footprint.Width = tilesX;
+        dst.PlacedFootprint.Footprint.Height = tilesY;
+        dst.PlacedFootprint.Footprint.Depth = 1;
+        dst.PlacedFootprint.Footprint.RowPitch = slot.rowPitch;
+
+        D3D12_TEXTURE_COPY_LOCATION src = {};
+        src.pResource = m_sssFitTiles.Get();
+        src.Type = D3D12_TEXTURE_COPY_TYPE_SUBRESOURCE_INDEX;
+        src.SubresourceIndex = 0;
+
+        const D3D12_BOX box = { 0, 0, 0, tilesX, tilesY, 1 };
+        cmdList->CopyTextureRegion(&dst, 0, 0, 0, &src, &box);
+
+        AddBarrier(cmdList, m_sssFitTiles.Get(), D3D12_RESOURCE_STATE_COPY_SOURCE, kSrvState);
+        slot.pending = true;
+    }
+
+    // Sums the fit terms of one readback and publishes the least-squares strength and residual. The per-pixel
+    // means are averaged over readouts (a plain mean for the first ten, then 10% per readout), restarting when the
+    // radius or the falloff changes.
+    void ReadSssFitSlot(SssFitSlot& slot)
+    {
+        if (!slot.readback || slot.tilesX == 0 || slot.tilesY == 0)
+            return;
+
+        void* mapped = nullptr;
+        const D3D12_RANGE readRange = { 0, SIZE_T(slot.rowPitch) * slot.tilesY };
+
+        if (FAILED(slot.readback->Map(0, &readRange, &mapped)) || mapped == nullptr)
+            return;
+
+        double sums[4] = {};
+
+        for (UINT y = 0; y < slot.tilesY; y++)
+        {
+            const float* row =
+                reinterpret_cast<const float*>(static_cast<const byte*>(mapped) + SIZE_T(slot.rowPitch) * y);
+
+            for (UINT x = 0; x < slot.tilesX; x++)
+            {
+                for (UINT c = 0; c < 4; c++)
+                {
+                    const float value = row[4 * x + c];
+
+                    if (std::isfinite(value))
+                        sums[c] += value;
+                }
+            }
+        }
+
+        const D3D12_RANGE writeRange = { 0, 0 };
+        slot.readback->Unmap(0, &writeRange);
+
+        m_sssFitReadouts++;
+
+        const double pixels = sums[3];
+
+        if (pixels >= 1.0)
+        {
+            const double means[3] = { sums[0] / pixels, sums[1] / pixels, sums[2] / pixels };
+
+            if (m_sssFitSamples == 0 || slot.radiusMm != m_sssFitAvgRadius || slot.falloff != m_sssFitAvgFalloff)
+            {
+                std::copy(std::begin(means), std::end(means), std::begin(m_sssFitAverage));
+                m_sssFitSamples = 1;
+                m_sssFitAvgRadius = slot.radiusMm;
+                m_sssFitAvgFalloff = slot.falloff;
+            }
+            else
+            {
+                m_sssFitSamples++;
+                const double weight = std::max(1.0 / double(m_sssFitSamples), 0.1);
+
+                for (int i = 0; i < 3; i++)
+                    m_sssFitAverage[i] += weight * (means[i] - m_sssFitAverage[i]);
+            }
+        }
+
+        const double gd = m_sssFitAverage[0];
+        const double dd = m_sssFitAverage[1];
+        const double gg = m_sssFitAverage[2];
+        const double r2 = (dd > 0.0 && gg > 0.0) ? (gd * gd) / (dd * gg) : 0.0;
+
+        auto& diagnostics = FSRD::Diagnostics::Instance();
+        std::scoped_lock lock(diagnostics.Mutex);
+        auto& readout = diagnostics.SssFit;
+
+        readout.valid = m_sssFitSamples > 0;
+        readout.readouts = m_sssFitReadouts;
+        readout.pixels = uint64_t(std::max(pixels, 0.0));
+        readout.emaSamples = m_sssFitSamples;
+        readout.radiusMm = m_sssFitAvgRadius;
+        readout.falloff = m_sssFitAvgFalloff;
+        readout.strength = (dd > 0.0) ? float(gd / dd) : 0.0f;
+        readout.error = float(std::sqrt(std::max(1.0 - r2, 0.0)));
     }
 
     // Pixel probe ---------------------------------------------------------------------------------
@@ -1153,7 +1533,8 @@ struct FSRDPreprocessor_Dx12::Impl
             .Flags = (UINT) CompFlags::RawSourceBlit | (UINT) CompFlags::ScaleSrc
         };
 
-        std::array<ID3D12Resource*, 1> uavs { dstTex };
+        // u1 (the SSS re-blur source, 28 Sep) gets a null descriptor: the blit never writes it
+        std::array<ID3D12Resource*, Composition::kOutputCount> uavs { dstTex, nullptr };
         const std::span<const byte> cbData((const byte*) &constants, sizeof(constants));
 
         m_compShader.Dispatch(cmdList, cbData, inputs.AsArray, uavs, dstDim, false);
@@ -1191,7 +1572,8 @@ FSRDPreprocessor_Dx12::FSRDPreprocessor_Dx12(std::string_view name, ID3D12Device
         m_impl->m_pDev = pDev;
         m_impl->Initialize(GetAsByteSpan(FSRDFloorSeed_cso), GetAsByteSpan(FSRDFloor_cso),
                            GetAsByteSpan(FSRDInputConv_cso), GetAsByteSpan(FSRDOutputComp_cso),
-                           GetAsByteSpan(FSRDLeak_cso), GetAsByteSpan(FSRDSplitFit_cso));
+                           GetAsByteSpan(FSRDLeak_cso), GetAsByteSpan(FSRDSplitFit_cso),
+                           GetAsByteSpan(FSRDSssBlur_cso));
         m_IsInitialized = true;
     }
     catch (const std::exception& err)
@@ -1350,8 +1732,15 @@ uint64_t FSRDPreprocessor_Dx12::GetGpuMemoryBytes() const
     Add(impl.m_splitHistory[0].Get());
     Add(impl.m_splitHistory[1].Get());
     Add(impl.m_splitIntercept.Get());
+    Add(impl.m_sssSource.Get());
+    Add(impl.m_sssBlurH.Get());
+    Add(impl.m_sssFitH.Get());
+    Add(impl.m_sssFitTiles.Get());
 
     for (const auto& slot : impl.m_probeSlots)
+        Add(slot.readback.Get());
+
+    for (const auto& slot : impl.m_sssFitSlots)
         Add(slot.readback.Get());
 
     return total;

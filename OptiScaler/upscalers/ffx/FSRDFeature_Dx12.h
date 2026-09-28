@@ -237,6 +237,17 @@ class FSRDFeatureDx12 : public FFXFeatureDx12
     bool ConvertDenoiserBuffers(ID3D12GraphicsCommandList* InCommandList);
 
     /**
+     * @brief Render-resolution focal length in pixels (SSS re-blur, 28 Sep). 0 without a projection.
+     */
+    float GetFocalLengthPx();
+
+    /**
+     * @brief True if the SSS re-blur runs this frame (28 Sep): switched on, SSS Separation above 0, guide and
+     * projection present.
+     */
+    bool IsSssReblurActive();
+
+    /**
      * @brief Dispatches FSR-RR denoiser converted inputs. Runs before upscaler.
      */
     bool DispatchDenoiser(ID3D12GraphicsCommandList* InCommandList, const ffxDispatchDescDenoiser& dispatchDesc);

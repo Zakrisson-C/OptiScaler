@@ -269,6 +269,7 @@ enum class DebugModes : uint64_t
     DenoiserOutput = (uint64_t) FSRDCompFlags::DebugDenoiserOutput << CompositionDebugOffset,
     Signal1 = (uint64_t) FSRDCompFlags::DebugSignal1 << CompositionDebugOffset,
     Signal2 = (uint64_t) FSRDCompFlags::DebugSignal2 << CompositionDebugOffset,
+    SssFit = (uint64_t) FSRDCompFlags::DebugSssFit << CompositionDebugOffset, // 28 Sep
 };
 
 static FSRDConvFlags GetConvDebugFlags(DebugModes mode)
@@ -342,6 +343,7 @@ constexpr auto kDebugModes = std::to_array<ModeNamePair>({
     { "TextureLeakDiffuse", (uint64_t) DebugModes::TextureLeakDiffuse },
     { "AdditiveLight", (uint64_t) DebugModes::AdditiveLight },
     { "SpecularShare", (uint64_t) DebugModes::SpecularShare },
+    { "SssFit", (uint64_t) DebugModes::SssFit },
 
     { "Signal1", (uint64_t) DebugModes::Signal1 },
     { "Signal2", (uint64_t) DebugModes::Signal2 },
@@ -931,6 +933,17 @@ bool FSRDFeatureDx12::EvaluateInternal(ID3D12GraphicsCommandList* InCommandList,
         TryGetNGXVoidPointer(inParams, NVSDK_NGX_Parameter_DLSSD_ColorBeforeParticles, compDesc.InColorBeforeParticles);
         compDesc.InSSSGuide = _convDesc.InSSSGuide;
 
+        // SSS re-blur (28 Sep): the same condition set the packing shader's SssResynth flag this frame
+        compDesc.SssApply = IsSssReblurActive();
+        compDesc.SssFit = cfg.FfxDenoiserSssFit.value_or_default();
+        compDesc.SssRadiusMm = cfg.FfxDenoiserSssRadius.value_or_default();
+        compDesc.SssFalloff = cfg.FfxDenoiserSssFalloff.value_or_default();
+        // With partial separation only that share of the game's blur was taken out, so only that share goes back.
+        // Separation 0 (fit only, nothing applied): the fit view shows the slider's own strength.
+        compDesc.SssStrength = cfg.FfxDenoiserSssReblurStrength.value_or_default() *
+                               ((_convDesc.SssSeparation > 0.0f) ? _convDesc.SssSeparation : 1.0f);
+        compDesc.FocalLengthPx = GetFocalLengthPx();
+
         // 26 Sep: with SSS separation on, the raw colour's SSS blotches are exactly what was taken out, so
         // the Correlation Bias raw blend stays off on SSS pixels too.
         if ((cfg.FfxDenoiserAbActive.value_or_default() && cfg.FfxDenoiserAbSssNoRawBlend.value_or_default()) ||
@@ -1296,6 +1309,26 @@ bool FSRDFeatureDx12::PrepareDenoiseConvInput(const NVSDK_NGX_Parameter& inParam
     return isReady;
 }
 
+// Render-resolution focal length in pixels, for the SSS re-blur's world-space kernel width (28 Sep). The projection's
+// [1][1] term is 1 / tan(fov_y / 2) and is the same transposed or not. 0 when there is no projection.
+float FSRDFeatureDx12::GetFocalLengthPx()
+{
+    const float yScale = std::fabs(_projMatrix.r[1].m128_f32[1]);
+
+    if (!std::isfinite(yScale) || yScale <= 0.0f)
+        return 0.0f;
+
+    return 0.5f * float(RenderHeight()) * yScale;
+}
+
+// SSS re-blur (28 Sep). Needs SSS Separation (the part it replaces), the guide and a projection. Checked by both the
+// conversion (drop the averaged contribution) and the composition (apply the re-blur), from the same frame's state.
+bool FSRDFeatureDx12::IsSssReblurActive()
+{
+    return Config::Instance()->FfxDenoiserSssReblur.value_or_default() && _convDesc.SssSeparation > 0.0f &&
+           _convDesc.InSSSGuide != nullptr && GetFocalLengthPx() > 0.0f;
+}
+
 bool FSRDFeatureDx12::ConvertDenoiserBuffers(ID3D12GraphicsCommandList* InCommandList)
 {
     const uint32_t dbgMode = (uint32_t) Config::Instance()->FfxDenoiserDebugMode.value_or_default();
@@ -1329,6 +1362,10 @@ bool FSRDFeatureDx12::ConvertDenoiserBuffers(ID3D12GraphicsCommandList* InComman
 
     if (s_isRoughnessPacked)
         _convDesc.Flags |= (uint32_t) FSRDConvFlags::IsRoughnessPacked;
+
+    // SSS re-blur (28 Sep): the SSS contribution is recomputed after composition instead of added back averaged
+    if (IsSssReblurActive())
+        _convDesc.Flags |= (uint32_t) FSRDConvFlags::SssResynth;
 
     // Troubleshooting (24 Sep). A/B switches for the pipeline audit's findings, all gated by the
     // master switch so a chosen set flips as one. Each bit off = previous behaviour.

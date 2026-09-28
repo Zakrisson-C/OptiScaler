@@ -189,6 +189,20 @@ struct FrameInfo
     uint64_t gameResets = 0;    // dispatches carrying the game's reset flag
 };
 
+// SSS re-blur fit (28 Sep). The re-blur kernel applied to the noisy colour before the game's SSS blur predicts the
+// game's SSS guide; this is the least-squares match of the two over every SSS pixel, averaged over readouts.
+struct SssFitReadout
+{
+    bool valid = false;
+    uint64_t readouts = 0;   // readouts since the feature started
+    uint64_t pixels = 0;     // SSS pixels in the last readout
+    uint32_t emaSamples = 0; // readouts in the average since the radius or falloff last changed
+    float radiusMm = 0.0f;   // parameters the average belongs to
+    float falloff = 0.0f;
+    float strength = 0.0f; // least-squares strength, sum(g d) / sum(d d)
+    float error = 0.0f;    // sqrt(1 - R^2): 0 = the kernel reproduces the game's blur exactly, 1 = no relation
+};
+
 struct RuntimeMessage
 {
     std::string text;
@@ -208,6 +222,7 @@ class Diagnostics
     std::mutex Mutex; // guards everything below
 
     ProbeReadout Probe;
+    SssFitReadout SssFit;
     std::array<TuningEntry, 6> Tuning;
     std::vector<InputInfo> Inputs;
     FrameInfo Frame;

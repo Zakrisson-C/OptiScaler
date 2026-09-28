@@ -36,6 +36,9 @@ static const uint2 s_ThreadGroupSize = uint2(THREAD_GROUP_SIZE_X, THREAD_GROUP_S
 #define FLAGS_AB_HITDIST_RECON          (1 << 13) // Fill missing (<= 0) spec hit distances from neighbours
 #define FLAGS_AB_SPEC_FOLLOW_SURFACE    (1 << 14) // Hit distance -> 0 on self-moving pixels (reflections ride the surface)
 #define FLAGS_SSS_RESET                 (1 << 15) // 26 Sep: SSS history invalid this frame (just switched on / resized)
+// 28 Sep: SSS re-blur on (FSRDSssBlur.hlsl). The SSS contribution is recomputed from the denoised colour after
+// composition, so the averaged one is not added back here. Above the debug mode bits (16-23).
+#define FLAGS_SSS_RESYNTH               (1 << 24)
 
 // Debug Flags
 #define FLAGS_DEBUG                     (1 << 16)
@@ -487,7 +490,9 @@ void CSMain(uint3 groupID : SV_GroupID, uint3 gtID : SV_GroupThreadID)
     // filter can't separate the two; it is averaged over frames instead (AccumulateSss).
     const float3 rawColorFull = rawColor;
     const float sssGuide = (SssSeparation > 0.0f) ? InSSSGuide[px] : 0.0f;
-    float3 sssDelta = 0.0f;
+    float3 sssDelta = 0.0f;   // the averaged SSS contribution (history; the SssDelta view)
+    float3 sssRouted = 0.0f;  // what goes around the denoiser on denoised pixels
+    float3 sssSkipped = 0.0f; // what a skipped pixel gets back
 
     [branch]
     if (SssSeparation > 0.0f)
@@ -504,6 +509,14 @@ void CSMain(uint3 groupID : SV_GroupID, uint3 gtID : SV_GroupThreadID)
         }
 
         sssDelta = AccumulateSss(px, sssDeltaNow, isSss);
+
+        // 28 Sep: with the re-blur the history keeps running (switching back finds it warm, the SssDelta view
+        // still shows it), but none of it goes around the denoiser: the re-blur recomputes that part from the
+        // denoised colour. A skipped pixel (no denoising) gets this frame's own contribution back, i.e. the game's
+        // colour.
+        const bool resynth = IsSet(FLAGS_SSS_RESYNTH);
+        sssRouted = resynth ? 0.0f : sssDelta;
+        sssSkipped = resynth ? sssDeltaNow : sssDelta;
     }
 
     float4 floorColor = InFloorColor[px];
@@ -816,7 +829,7 @@ void CSMain(uint3 groupID : SV_GroupID, uint3 gtID : SV_GroupThreadID)
         // residual. The composition uses it as the skip luminance in the SSIM reference that
         // drives the Correlation Bias raw blend.
         // SSS separation (26 Sep): the SSS contribution goes around the denoiser.
-        floorColor.rgb += sssDelta;
+        floorColor.rgb += sssRouted;
 
         if (IsSet(FLAGS_AB_SKIP_ALPHA_FINAL))
             floorColor.a = GetLuminance(floorColor.rgb);
@@ -1055,14 +1068,14 @@ void CSMain(uint3 groupID : SV_GroupID, uint3 gtID : SV_GroupThreadID)
         const float skippedAlpha = IsSet(FLAGS_AB_SKIPPED_INACTIVE) ? -1.0f : 0.0f;
         OutSignal1[px] = half4(0.0f, 0.0f, 0.0f, skippedAlpha);
         OutSignal2[px] = half4(0.0f, 0.0f, 0.0f, skippedAlpha);
-        OutSkipSignal[px] = half4(rawColor + sssDelta, rawLuma);
+        OutSkipSignal[px] = half4(rawColor + sssSkipped, rawLuma);
 
         PROBE_WRITE(PROBE_HIT_DIST, float4(InSpecHitDist[px], 0.0f, 0.0f, 1.0f));
         PROBE_WRITE(PROBE_GATE_TERMS, float4(0.0f, 0.0f, 0.0f, 0.0f));
         PROBE_WRITE(PROBE_DENOISER_COLOR, float4(denoiserColor, 0.0f));
         PROBE_WRITE(PROBE_DEMOD_SPEC, float4(0.0f, 0.0f, 0.0f, 0.0f));
         PROBE_WRITE(PROBE_DEMOD_DIFF, float4(0.0f, 0.0f, 0.0f, skippedAlpha));
-        PROBE_WRITE(PROBE_SKIP_OUT, float4(rawColor + sssDelta, rawLuma));
+        PROBE_WRITE(PROBE_SKIP_OUT, float4(rawColor + sssSkipped, rawLuma));
         PROBE_WRITE(PROBE_GEOMETRY, float4(depthDelta, 0.0f, 0.0f, 0.0f));
     }
 }

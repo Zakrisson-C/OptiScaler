@@ -96,6 +96,10 @@ class FSRDPreprocessor_Dx12
         DebugLeakDiffuse = 33 << 17 | Debug,       // texture leak into the diffuse lighting (26 Sep, FSRDLeak)
         DebugAdditiveLight = 34 << 17 | Debug,     // light that doesn't follow the albedo (27 Sep, FSRDSplitFit)
         DebugSpecularShare = 35 << 17 | Debug,     // specular share after the additive light split (27 Sep)
+
+        // 28 Sep: SSS re-blur on. The SSS contribution is recomputed from the denoised colour after composition
+        // (FSRDSssBlur.hlsl), so the averaged one isn't added back around the denoiser. Above the debug bits.
+        SssResynth = 1 << 24,
     };
 
     enum class CompFlags : uint32_t
@@ -104,6 +108,7 @@ class FSRDPreprocessor_Dx12
         RawSourceBlit = 1 << 0, // Bypass composition and write unmodified input
         ScaleSrc = 1 << 1,      // Enable bilinear scaling to output
         SssNoRawBlend = 1 << 3, // A/B (25 Sep): no Correlation Bias raw blend on SSS-guide pixels
+        SssResynth = 1 << 4,    // 28 Sep: write the SSS re-blur's source (set by the converter itself)
         // Mode2Signal (1 << 2) removed (transplant, 22 Sep): the composition shader always blends
         // both split signals now - see FSRDOutputComp.hlsl. Bit 2 deliberately left unused.
 
@@ -115,6 +120,7 @@ class FSRDPreprocessor_Dx12
         DebugDenoiserOutput = 3 << 17 | Debug,
         DebugSignal1 = 4 << 17 | Debug,
         DebugSignal2 = 5 << 17 | Debug,
+        DebugSssFit = 6 << 17 | Debug, // 28 Sep: SSS re-blur fit residual, drawn after composition
     };
 
     /**
@@ -257,6 +263,14 @@ class FSRDPreprocessor_Dx12
         ID3D12Resource* InRawColor;
         ID3D12Resource* InColorBeforeParticles; // NVSDK_NGX_Parameter_DLSSD_ColorBeforeParticles (Optional)
         ID3D12Resource* InSSSGuide = nullptr;   // DLSSD SSS guide (Optional, 25 Sep)
+
+        // SSS re-blur (28 Sep, FSRDSssBlur.hlsl). Needs the guide.
+        bool SssApply = false;      // blur the denoised colour on SSS pixels (SSS Separation must be on)
+        bool SssFit = false;        // fit the kernel against the guide, results in FSRD::Diagnostics
+        float SssRadiusMm = 2.0f;   // Gaussian sigma of the widest (red) channel, millimetres
+        float SssStrength = 1.0f;   // 0 = no blur, 1 = full
+        float SssFalloff = 0.0f;    // 0 = same width for all channels, 1 = green and blue much narrower
+        float FocalLengthPx = 0.0f; // render height / (2 tan(fov_y / 2)); 0 = unknown, re-blur off
     };
 
   public:
