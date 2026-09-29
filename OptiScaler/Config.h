@@ -520,14 +520,15 @@ class Config
     // Needs SSS Separation above 0 (it replaces the separated part). Off = the history path above.
     CustomOptional<bool> FfxDenoiserSssReblur { false };
 
-    // Gaussian sigma of the widest (red) channel, millimetres.
-    CustomOptional<float> FfxDenoiserSssRadius { 2.0f };
+    // Gaussian sigma of the widest (red) channel, millimetres. 29 Sep: preliminary defaults from Chris's fit
+    // (radius 2.18, strength 0.56, falloff 1).
+    CustomOptional<float> FfxDenoiserSssRadius { 2.18f };
 
     // 0 = no blur, 1 = full. The fit's strength is the value that matches the game's blur.
-    CustomOptional<float> FfxDenoiserSssReblurStrength { 1.0f };
+    CustomOptional<float> FfxDenoiserSssReblurStrength { 0.56f };
 
     // 0 = the same width for all channels, 1 = green and blue at 0.4 and 0.3 of red's.
-    CustomOptional<float> FfxDenoiserSssFalloff { 0.0f };
+    CustomOptional<float> FfxDenoiserSssFalloff { 1.0f };
 
     // Fit the kernel against the game's SSS guide every frame and show strength and residual in the menu.
     CustomOptional<bool> FfxDenoiserSssFit { false };
