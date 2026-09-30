@@ -602,8 +602,8 @@ class Config
     // NoEmissive: never reinterpret a pixel as emissive. GateNoRoughness (finding 7) / GateNoBias: keep the
     // hit distance on rough / bias-masked pixels. SoftMinNonNeg (1): soft-min floor clamped at 0.
     // SkipAlphaFinal (2): skip alpha from the final floor. SkippedInactive (6): skipped pixels sent as
-    // inactive. FloorNoAlias (4): first floor pass not in place. DeclaredStates (5): signal resource states
-    // declared as they are. Albedo16 (3): RGBA16F albedo, recreates the feature. SdkDefaults (10):
+    // inactive. FloorNoAlias (4): first floor pass not in place. (DeclaredStates, finding 5, is unconditional
+    // since 30 Sep.) Albedo16 (3): RGBA16F albedo, recreates the feature. SdkDefaults (10):
     // denoiser 1.2's own tuning defaults. FrameIndexDoubled: the transplant's frame index (advanced twice per
     // frame, so the denoiser reset its history every frame), kept for before/after comparison.
     CustomOptional<bool> FfxDenoiserAbActive { true };
@@ -614,7 +614,6 @@ class Config
     CustomOptional<bool> FfxDenoiserAbSkipAlphaFinal { false };
     CustomOptional<bool> FfxDenoiserAbSkippedInactive { false };
     CustomOptional<bool> FfxDenoiserAbFloorNoAlias { false };
-    CustomOptional<bool> FfxDenoiserAbDeclaredStates { false };
     CustomOptional<bool> FfxDenoiserAbAlbedo16 { false };
     CustomOptional<bool> FfxDenoiserAbSdkDefaults { false };
     CustomOptional<bool> FfxDenoiserAbFrameIndexDoubled { false };

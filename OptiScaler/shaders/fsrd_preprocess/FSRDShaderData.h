@@ -3,10 +3,17 @@
 
 namespace FSRD
 {
+// 30 Sep: frames each pass's descriptor tables and constant buffers last before they are rewritten. There is no fence:
+// a slot is reused this many frames after it was recorded, whether or not the GPU has executed that frame yet. The
+// rings were sized for 3 frames; a CPU running 3 frames ahead of a GPU-bound frame (path tracing, nothing capping the
+// queue) then rewrote tables the GPU was still to read: usually a one-frame glitch, at worst a torn descriptor and a
+// GPU fault. 8 frames costs a few KB.
+constexpr UINT kFramesInFlight = 8;
+
 namespace FloorSeed
 {
 constexpr UINT kPasses = 1;
-constexpr UINT kBackBufferCount = std::max(3 * (kPasses + 1), 1u);
+constexpr UINT kBackBufferCount = std::max(kFramesInFlight * (kPasses + 1), 1u);
 
 enum class Flags : uint32_t
 {
@@ -65,7 +72,7 @@ union Output
 namespace FloorFilter
 {
 constexpr UINT kPasses = 5;
-constexpr UINT kBackBufferCount = std::max(3 * (kPasses + 1), 1u);
+constexpr UINT kBackBufferCount = std::max(kFramesInFlight * (kPasses + 1), 1u);
 
 enum class Flags : uint32_t
 {
@@ -130,7 +137,7 @@ union Output
 
 namespace Conversion
 {
-constexpr UINT kBackBufferCount = 3;
+constexpr UINT kBackBufferCount = kFramesInFlight;
 
 // Mode1Signal (ffxDispatchDescDenoiserInput1Signal) and Mode2Signal
 // (ffxDispatchDescDenoiserInput2Signals) removed (transplant, 22 Sep): denoiser 1.2 has no
@@ -294,7 +301,7 @@ constexpr UINT kSssHistoryUav = Output::kCount + 1;
 // share (averaged over frames) replaces the reflectance ratio in the packing shader.
 namespace SplitFit
 {
-constexpr UINT kBackBufferCount = 3;
+constexpr UINT kBackBufferCount = kFramesInFlight;
 
 enum class Flags : uint32_t
 {
@@ -339,7 +346,7 @@ constexpr UINT kOutputCount = 2; // share history (read by the packing shader), 
 // Texture leak views (26 Sep, FSRDLeak.hlsl): debug only, one dispatch on frames that show one.
 namespace Leak
 {
-constexpr UINT kBackBufferCount = 3;
+constexpr UINT kBackBufferCount = kFramesInFlight;
 
 enum class Flags : uint32_t
 {
@@ -383,8 +390,8 @@ constexpr UINT kOutputCount = 1;
 // before the game's blur, to fit radius and strength against the guide.
 namespace SssBlur
 {
-// Two dispatches per frame (horizontal, vertical), three frames in flight, with margin
-constexpr UINT kBackBufferCount = 12;
+// Two dispatches per frame (horizontal, vertical)
+constexpr UINT kBackBufferCount = 2 * kFramesInFlight;
 
 enum class Flags : uint32_t
 {
@@ -436,7 +443,8 @@ constexpr UINT kGroupSize = 8;
 
 namespace Composition
 {
-constexpr UINT kBackBufferCount = 7;
+// Composition plus the debug blit
+constexpr UINT kBackBufferCount = 2 * kFramesInFlight;
 constexpr UINT kOutputCount = 2; // output colour, SSS re-blur source (28 Sep, null unless the re-blur is on)
 
 struct alignas(16) Constants

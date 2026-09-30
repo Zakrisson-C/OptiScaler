@@ -2819,10 +2819,6 @@ std::vector<FsrdAbSwitch> FsrdAbSwitches(Config* config)
           "Audit finding 4. The first a-trous pass reads and writes the same\n"
           "texture: a race, and a D3D12 state violation. Writes it to the spare\n"
           "buffer instead. Look for blocky 8x8 artefacts or floor changes." },
-        { "Declare signal resource states", &config->FfxDenoiserAbDeclaredStates,
-          "Audit finding 5. Tells the denoiser the states its signal inputs and\n"
-          "outputs are actually in (shader read / UAV) instead of 'compute read'\n"
-          "for both. The SDK issues its barriers from, and back to, those." },
         { "16-bit albedo", &config->FfxDenoiserAbAlbedo16,
           "Audit finding 3. Stores both albedo textures as RGBA16F instead of\n"
           "RGBA8, so the composition remodulates with the albedo the shim\n"
@@ -4155,7 +4151,10 @@ void MenuCommon::RenderActiveUpscalerSettings(RenderMenuContext& ctx)
                 if (!state.ffxDenoiserDebugModes.empty())
                 {
                     uint64_t ffxDenoiseDebugMode = config->FfxDenoiserDebugMode.value_or_default();
-                    const char* currentEnum = state.ffxDenoiserDebugModeNames[ffxDenoiseDebugMode];
+                    // 30 Sep: find(), not operator[] - that inserts, i.e. writes a map the render thread owns
+                    const auto currentIt = state.ffxDenoiserDebugModeNames.find(ffxDenoiseDebugMode);
+                    const char* currentEnum =
+                        (currentIt != state.ffxDenoiserDebugModeNames.end()) ? currentIt->second : "?";
 
                     if (ImGui::BeginCombo("Debug View", currentEnum))
                     {
@@ -4184,7 +4183,12 @@ void MenuCommon::RenderActiveUpscalerSettings(RenderMenuContext& ctx)
                         // Debug view list - these are getting slightly out of hand
                         for (const uint64_t dbgMode : state.ffxDenoiserDebugModes)
                         {
-                            const char* name = state.ffxDenoiserDebugModeNames[dbgMode];
+                            const auto nameIt = state.ffxDenoiserDebugModeNames.find(dbgMode);
+
+                            if (nameIt == state.ffxDenoiserDebugModeNames.end() || nameIt->second == nullptr)
+                                continue;
+
+                            const char* name = nameIt->second;
 
                             // If it's not in the filter, don't show it
                             if (!GetIsInFilter(name, filter))
