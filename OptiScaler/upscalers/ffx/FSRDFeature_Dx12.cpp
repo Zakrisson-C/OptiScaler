@@ -593,13 +593,17 @@ bool FSRDFeatureDx12::QueryDenoiserVersions()
     state.ffxDenoiserVersionIds.resize(versionCount);
     state.ffxDenoiserVersionNames.resize(versionCount);
 
-    state.ffxDenoiserDebugModes.clear();
-    state.ffxDenoiserDebugModeNames.clear();
-
-    for (const auto& mode : kDebugModes)
+    // 30 Sep: built once, never cleared. The menu iterates these on the present thread; this runs on the render
+    // thread whenever an FSR-RR feature is created, including while the previous one is still current and shown
+    // (Streamline creates the new feature on a resolution change and releases the old one 3 frames later). Clearing
+    // and refilling them here could free memory the menu was reading: a crash with the menu open.
+    if (state.ffxDenoiserDebugModes.empty())
     {
-        state.ffxDenoiserDebugModes.push_back(mode.second);
-        state.ffxDenoiserDebugModeNames.emplace(mode.second, mode.first);
+        for (const auto& mode : kDebugModes)
+            state.ffxDenoiserDebugModeNames.emplace(mode.second, mode.first);
+
+        for (const auto& mode : kDebugModes)
+            state.ffxDenoiserDebugModes.push_back(mode.second);
     }
 
     if (versionCount == 0)
@@ -955,10 +959,11 @@ bool FSRDFeatureDx12::PrepareDenoiserInput(ID3D12GraphicsCommandList* InCommandL
     // Populate resources and link signal headers: dispatchDesc -> indirectSpecularSignal ->
     // indirectDiffuseSignal (see FSRDPreprocessor_Dx12::GetSignal).
     //
-    // A/B, audit finding 5 (24 Sep): declare the signal resources in the states they are actually in.
-    const auto& abCfg = *Config::Instance();
-    _lastDeclaredStates =
-        abCfg.FfxDenoiserAbActive.value_or_default() && abCfg.FfxDenoiserAbDeclaredStates.value_or_default();
+    // Audit finding 5 (24 Sep; unconditional since 30 Sep, was an A/B): declare the signal resources in the states
+    // they are actually in, inputs shader-read and outputs UAV, as AMD's sample does. Declared as compute-read, the
+    // SDK issued its barriers from a state the outputs weren't in, and left them in one the composition's barrier
+    // didn't expect: undefined behaviour in D3D12, the kind a driver may answer with corruption or a GPU hang.
+    _lastDeclaredStates = true;
     FSRDConvShader->GetSignal(indirectDiffuseSignal, indirectSpecularSignal, dispatchDesc, _lastDeclaredStates);
 
     // Retag to the buckets the context was created with (23 Sep, see DesiredSignalFlags). The direct and

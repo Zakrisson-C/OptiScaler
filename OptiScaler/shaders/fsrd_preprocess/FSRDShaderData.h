@@ -3,10 +3,17 @@
 
 namespace FSRD
 {
+// 30 Sep: frames each pass's descriptor tables and constant buffers last before they are rewritten. There is no fence:
+// a slot is reused this many frames after it was recorded, whether or not the GPU has executed that frame yet. The
+// rings were sized for 3 frames; a CPU running 3 frames ahead of a GPU-bound frame (path tracing, nothing capping the
+// queue) then rewrote tables the GPU was still to read: usually a one-frame glitch, at worst a torn descriptor and a
+// GPU fault. 8 frames costs a few KB.
+constexpr UINT kFramesInFlight = 8;
+
 namespace FloorSeed
 {
 constexpr UINT kPasses = 1;
-constexpr UINT kBackBufferCount = std::max(3 * (kPasses + 1), 1u);
+constexpr UINT kBackBufferCount = std::max(kFramesInFlight * (kPasses + 1), 1u);
 
 enum class Flags : uint32_t
 {
@@ -65,7 +72,7 @@ union Output
 namespace FloorFilter
 {
 constexpr UINT kPasses = 5;
-constexpr UINT kBackBufferCount = std::max(3 * (kPasses + 1), 1u);
+constexpr UINT kBackBufferCount = std::max(kFramesInFlight * (kPasses + 1), 1u);
 
 enum class Flags : uint32_t
 {
@@ -130,7 +137,7 @@ union Output
 
 namespace Conversion
 {
-constexpr UINT kBackBufferCount = 3;
+constexpr UINT kBackBufferCount = kFramesInFlight;
 
 // Mode1Signal (ffxDispatchDescDenoiserInput1Signal) and Mode2Signal
 // (ffxDispatchDescDenoiserInput2Signals) removed (transplant, 22 Sep): denoiser 1.2 has no
@@ -270,7 +277,8 @@ constexpr UINT kUavCount = Output::kCount + 1;
 
 namespace Composition
 {
-constexpr UINT kBackBufferCount = 7;
+// Composition plus the debug blit
+constexpr UINT kBackBufferCount = 2 * kFramesInFlight;
 constexpr UINT kOutputCount = 1;
 
 struct alignas(16) Constants

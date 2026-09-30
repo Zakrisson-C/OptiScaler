@@ -28,7 +28,7 @@ using Microsoft::WRL::ComPtr;
 using namespace DirectX;
 using namespace FSRD;
 
-constexpr UINT kBackBufferCount = 3;
+constexpr UINT kBackBufferCount = FSRD::kFramesInFlight;
 
 constexpr UINT kThreadGroupSizeX = 8;
 constexpr UINT kThreadGroupSizeY = 8;
