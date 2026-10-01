@@ -533,6 +533,13 @@ class Config
     // Fit the kernel against the game's SSS guide every frame and show strength and residual in the menu.
     CustomOptional<bool> FfxDenoiserSssFit { false };
 
+    // Object depth limit (1 Oct), percent of depth per frame. The object-motion depth delta tells the denoiser a
+    // self-moving pixel's depth changed by whatever last frame's depth at its previous position says, so its depth
+    // test always passes there: a moving character's skin uncovered from behind a hand keeps the hand's history
+    // (ghosting). A depth change beyond this limit is treated as an uncovering instead, and the history is
+    // dropped. Also tightens the SSS history's same-surface test. 0 = no limit (previous behaviour).
+    CustomOptional<float> FfxDenoiserObjectDepthLimit { 0.0f };
+
     // Additive light split (27 Sep): light that doesn't follow the albedo (fog, haze, a reflection brighter than
     // the diffuse lighting on a textured surface), found by fitting colour against albedo per window, goes to
     // the specular lobe instead of being divided by the texture. 0 = off, 1 = full.

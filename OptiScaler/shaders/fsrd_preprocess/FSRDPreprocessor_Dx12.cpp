@@ -741,6 +741,7 @@ struct FSRDPreprocessor_Dx12::Impl
         // Additive light split (27 Sep): the specular share DispatchSplitFit wrote this frame, if it ran
         in.Resources.InSplitFit = m_splitCurrent;
         packConstants.AdditiveSeparation = (m_splitCurrent != nullptr) ? desc.AdditiveSeparation : 0.0f;
+        packConstants.ObjectDepthLimit = std::clamp(desc.ObjectDepthLimit, 0.0f, 1.0f);
 
         if (!sssActive)
             packConstants.SssSeparation = 0.0f;

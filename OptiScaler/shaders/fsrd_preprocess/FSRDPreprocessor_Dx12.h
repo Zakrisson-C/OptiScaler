@@ -226,6 +226,11 @@ class FSRDPreprocessor_Dx12
         // routed to the specular lobe instead of being divided by the texture. 0 = off.
         float AdditiveSeparation = 0.0f;
 
+        // Object depth limit (1 Oct): largest depth change per frame, as a fraction of the depth, still treated as
+        // an object's own motion by the object-motion depth delta (and the SSS history). Beyond it the pixel was
+        // uncovered and the denoiser drops its history. 0 = no limit.
+        float ObjectDepthLimit = 0.0f;
+
         // Weight of the current frame in the averaged specular share. 1 = no history.
         float AdditiveHistoryAlpha = 0.2f;
 

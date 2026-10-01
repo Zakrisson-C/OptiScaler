@@ -2917,7 +2917,7 @@ std::string FsrdBuildReport(Config* config, State& state, const FSRD::ProbeReado
         "normal sharpness {}, albedo guide {}, luma symmetry {}, grazing {}, soft min {}, roughness "
         "exponent {}, hit distance scale {}, spec guard {} (fade {}..{}), split prior {}, firefly clamp {}, "
         "SSS separation {}, SSS history {}, SSS re-blur {} (radius {} mm, strength {}, falloff {}), additive split {} "
-        "(history {})",
+        "(history {}), object depth limit {}%",
         FsrdNum(config->FfxDenoiserCorrelationBias.value_or_default()),
         FsrdNum(config->FfxDenoiserFloorIsolation.value_or_default()),
         FsrdNum(config->FfxDenoiserBiasMaskStrength.value_or_default()),
@@ -2941,7 +2941,8 @@ std::string FsrdBuildReport(Config* config, State& state, const FSRD::ProbeReado
         FsrdNum(config->FfxDenoiserSssReblurStrength.value_or_default()),
         FsrdNum(config->FfxDenoiserSssFalloff.value_or_default()),
         FsrdNum(config->FfxDenoiserAdditiveSplit.value_or_default()),
-        FsrdNum(config->FfxDenoiserAdditiveSplitHistory.value_or_default())));
+        FsrdNum(config->FfxDenoiserAdditiveSplitHistory.value_or_default()),
+        FsrdNum(config->FfxDenoiserObjectDepthLimit.value_or_default())));
     Line(std::format("Buckets: diffuse as direct {}, specular as direct {}; flip view z {}",
                      config->FfxDenoiserDiffuseAsDirect.value_or_default() ? "on" : "off",
                      config->FfxDenoiserSpecularAsDirect.value_or_default() ? "on" : "off",
@@ -4479,6 +4480,22 @@ void MenuCommon::RenderActiveUpscalerSettings(RenderMenuContext& ctx)
                         ImGui::TextDisabled("Fit: waiting for SSS pixels (needs the game's SSS guide)");
                     }
                 }
+
+                if (float v = config->FfxDenoiserObjectDepthLimit.value_or_default();
+                    ImGui::SliderFloat("Object Depth Limit (%)", &v, 0.0f, 20.0f, "%.1f"))
+                    config->FfxDenoiserObjectDepthLimit = v;
+                ShowHelpMarker("Against ghosting on moving characters whose skin\n"
+                               "(or clothes) is briefly covered: a hand passing in\n"
+                               "front of a face, a passer-by. On anything that moves\n"
+                               "by itself the shim tells the denoiser how the depth\n"
+                               "changed, so history survives the motion - but it\n"
+                               "also survived being uncovered. A depth change per\n"
+                               "frame beyond this share of the depth now counts as\n"
+                               "uncovered and the history there is dropped (a moment\n"
+                               "of noise instead of a ghost). Try 3. Too low: noisy\n"
+                               "edges on fast objects coming at you. 0 = off. Also\n"
+                               "tightens the SSS History path's same-surface test.\n"
+                               "View: OutDepthDelta.");
 
                 if (float v = config->FfxDenoiserAdditiveSplit.value_or_default();
                     ImGui::SliderFloat("Additive Light Split", &v, 0, 1))

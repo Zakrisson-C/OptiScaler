@@ -197,7 +197,11 @@ struct alignas(16) Constants
 
     // Additive light split (27 Sep): > 0 = specular share from the split fit. 0 = off (bit-identical).
     float AdditiveSeparation;
-    float _Padding4[2];
+
+    // Object depth limit (1 Oct): depth change per frame, as a fraction of depth, beyond which a self-moving
+    // pixel counts as uncovered. 0 = no limit (bit-identical).
+    float ObjectDepthLimit;
+    float _Padding4;
 };
 
 // Matches the cbuffer layout DXC reports for CB_Packing in FSRDInputConv.hlsl.
@@ -209,6 +213,7 @@ static_assert(offsetof(Constants, SssSeparation) == 284, "Conversion::Constants 
 static_assert(offsetof(Constants, ProjMatrix) == 288, "Conversion::Constants out of sync with CB_Packing");
 static_assert(offsetof(Constants, SssHistoryAlpha) == 352, "Conversion::Constants out of sync with CB_Packing");
 static_assert(offsetof(Constants, AdditiveSeparation) == 356, "Conversion::Constants out of sync with CB_Packing");
+static_assert(offsetof(Constants, ObjectDepthLimit) == 360, "Conversion::Constants out of sync with CB_Packing");
 
 union Input
 {

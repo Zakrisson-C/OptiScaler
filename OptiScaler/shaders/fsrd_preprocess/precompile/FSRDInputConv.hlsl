@@ -217,7 +217,11 @@ cbuffer CB_Packing : register(b0)
 
     // Additive light split (27 Sep): > 0 = take the specular share from InSplitFit. 0 = off (bit-identical).
     float AdditiveSeparation;
-    float2 _Padding4;
+
+    // Object depth limit (1 Oct): largest depth change per frame, as a fraction of the depth, still read as an
+    // object's own motion; beyond it the pixel was uncovered. 0 = no limit (bit-identical).
+    float ObjectDepthLimit;
+    float _Padding4;
 };
 
 bool IsSet(uint mask) { return (Flags & mask) == mask; }
@@ -261,12 +265,14 @@ static const float kMinReflectance = 8e-3f;
 
 // SSS history (26 Sep). Exponential average of the SSS contribution along the game's motion vectors.
 // The history's alpha holds each pixel's linear depth (0 = no SSS material there), which doubles as the
-// disocclusion test: a tap only counts if it was SSS last frame and sits within 10% of this depth.
+// disocclusion test: a tap only counts if it was SSS last frame and sits within 10% of this depth (within the
+// object depth limit, if one is set: skin uncovered from behind other skin - a hand over a face - is within 10%).
 // Writes this frame's history for every pixel, so non-SSS pixels clear their slot.
 float3 AccumulateSss(const int2 px, const float3 deltaNow, const bool isSss)
 {
     float3 result = deltaNow;
     const float depth = abs(InDepth[px]);
+    const float depthTolerance = (ObjectDepthLimit > 0.0f) ? min(ObjectDepthLimit, 0.1f) : 0.1f;
 
     [branch]
     if (isSss && SssHistoryAlpha < 1.0f && !IsSet(FLAGS_SSS_RESET))
@@ -291,7 +297,7 @@ float3 AccumulateSss(const int2 px, const float3 deltaNow, const bool isSss)
                 const int2 offset = int2(i & 1, i >> 1);
                 const float4 history = InSssHistory[clamp(base + offset, int2(0, 0), maxPx)];
                 const float bilinear = ((offset.x != 0) ? f.x : 1.0f - f.x) * ((offset.y != 0) ? f.y : 1.0f - f.y);
-                const bool sameSurface = (history.a > 0.0f) && (abs(history.a - depth) < 0.1f * depth);
+                const bool sameSurface = (history.a > 0.0f) && (abs(history.a - depth) < depthTolerance * depth);
                 const float w = sameSurface ? bilinear : 0.0f;
 
                 sum += w * history.rgb;
@@ -660,7 +666,19 @@ void CSMain(uint3 groupID : SV_GroupID, uint3 gtID : SV_GroupThreadID)
         if (all(prevUV >= 0.0f) && all(prevUV < 1.0f))
         {
             const float prevDepth = abs(InPrevLinearDepth[int2(prevUV * DstTexSize.xy)]);
-            const float selfMotion = smoothstep(0.75f, 1.5f, length(motionErrorPx));
+            float selfMotion = smoothstep(0.75f, 1.5f, length(motionErrorPx));
+
+            // Object depth limit (1 Oct). Taking the delta from last frame's depth makes the denoiser's depth test
+            // pass by construction, whatever was at that position: on anything that moves by itself (characters)
+            // a surface uncovered from behind an occluder kept the occluder's history - ghosting on skin that
+            // was briefly covered by a hand or a passer-by. A real object changes its depth by a few percent per
+            // frame at most; a jump beyond the limit is an uncovering, and the camera-model delta is kept so the
+            // denoiser's test fails there and the history is dropped.
+            if (ObjectDepthLimit > 0.0f)
+            {
+                const float jump = abs(prevDepth - viewSpacePos.z) / max(viewSpacePos.z, 1e-3f);
+                selfMotion *= 1.0f - smoothstep(ObjectDepthLimit, 2.0f * ObjectDepthLimit, jump);
+            }
             depthDelta = lerp(depthDelta, prevDepth - viewSpacePos.z, selfMotion);
         }
     }
