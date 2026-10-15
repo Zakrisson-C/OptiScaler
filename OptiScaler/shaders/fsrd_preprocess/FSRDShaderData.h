@@ -202,12 +202,16 @@ struct alignas(16) Constants
     // pixel counts as uncovered. 0 = no limit (bit-identical).
     float ObjectDepthLimit;
 
-    // Frame counter (15 Oct), seeds the bias mask's history dither
+    // Frame counter (15 Oct), drives the bias mask's history schedule
     uint32_t FrameIndex;
+
+    // Bias mask history limit (16 Oct): reset period in frames for a fully masked pixel
+    float BiasHistoryFrames;
+    float _Padding5[3];
 };
 
 // Matches the cbuffer layout DXC reports for CB_Packing in FSRDInputConv.hlsl.
-static_assert(sizeof(Constants) == 368, "Conversion::Constants out of sync with CB_Packing");
+static_assert(sizeof(Constants) == 384, "Conversion::Constants out of sync with CB_Packing");
 static_assert(offsetof(Constants, ProbeCenterX) == 256, "Conversion::Constants out of sync with CB_Packing");
 static_assert(offsetof(Constants, FloorSpecGuardFadeStart) == 272, "Conversion::Constants out of sync with CB_Packing");
 static_assert(offsetof(Constants, FireflyClampK) == 280, "Conversion::Constants out of sync with CB_Packing");
@@ -217,6 +221,7 @@ static_assert(offsetof(Constants, SssHistoryAlpha) == 352, "Conversion::Constant
 static_assert(offsetof(Constants, AdditiveSeparation) == 356, "Conversion::Constants out of sync with CB_Packing");
 static_assert(offsetof(Constants, ObjectDepthLimit) == 360, "Conversion::Constants out of sync with CB_Packing");
 static_assert(offsetof(Constants, FrameIndex) == 364, "Conversion::Constants out of sync with CB_Packing");
+static_assert(offsetof(Constants, BiasHistoryFrames) == 368, "Conversion::Constants out of sync with CB_Packing");
 
 union Input
 {

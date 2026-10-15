@@ -235,6 +235,10 @@ class FSRDPreprocessor_Dx12
         // uncovered and the denoiser drops its history. 0 = no limit.
         float ObjectDepthLimit = 0.0f;
 
+        // Bias mask as a history limit (16 Oct, ConvFlags::BiasHistory): a pixel with mask m drops its history once
+        // every BiasHistoryFrames / m frames.
+        float BiasHistoryFrames = 8.0f;
+
         // Weight of the current frame in the averaged specular share. 1 = no history.
         float AdditiveHistoryAlpha = 0.2f;
 

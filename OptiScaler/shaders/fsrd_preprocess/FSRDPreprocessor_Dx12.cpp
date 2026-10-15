@@ -744,6 +744,7 @@ struct FSRDPreprocessor_Dx12::Impl
         packConstants.AdditiveSeparation = (m_splitCurrent != nullptr) ? desc.AdditiveSeparation : 0.0f;
         packConstants.ObjectDepthLimit = std::clamp(desc.ObjectDepthLimit, 0.0f, 1.0f);
         packConstants.FrameIndex = m_convFrame++;
+        packConstants.BiasHistoryFrames = std::clamp(desc.BiasHistoryFrames, 1.0f, 256.0f);
 
         if (!sssActive)
             packConstants.SssSeparation = 0.0f;

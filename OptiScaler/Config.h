@@ -478,10 +478,14 @@ class Config
     CustomOptional<float> FfxDenoiserBiasMaskStrength { 0.5f };
 
     // 15 Oct: what the bias mask does. Off = route the flagged pixels around the denoiser (raw colour, the behaviour
-    // above). On = keep them in the denoiser and drop their history in a random share (mask x strength) of frames,
-    // closer to DLSS-RR, which only favours the current frame there. Rain marks much of the screen; routed, that
-    // looked like DenoiserBypass.
+    // above). On = keep them in the denoiser and drop their history on a schedule (below), closer to DLSS-RR, which
+    // only favours the current frame there. Rain marks much of the screen; routed, that looked like DenoiserBypass.
     CustomOptional<bool> FfxDenoiserBiasMaskHistory { false };
+
+    // 16 Oct: with the bias mask as a history limit, a fully masked pixel drops its history once every this many
+    // frames (a pixel with mask m every N / m), staggered so the reset pixels are evenly spread. Lower = less smear on
+    // animated surfaces and particles, more noise.
+    CustomOptional<float> FfxDenoiserBiasHistoryFrames { 8.0f };
 
     // Fraction of the floor filter's high frequency luminance residual pushed back into
     // the floor on the final pass, so texture microcontrast bypasses the denoiser.

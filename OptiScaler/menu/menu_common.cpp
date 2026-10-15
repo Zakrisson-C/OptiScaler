@@ -2917,7 +2917,7 @@ std::string FsrdBuildReport(Config* config, State& state, const FSRD::ProbeReado
         "normal sharpness {}, albedo guide {}, luma symmetry {}, grazing {}, soft min {}, roughness "
         "exponent {}, hit distance scale {}, spec guard {} (fade {}..{}), split prior {}, firefly clamp {}, "
         "SSS separation {}, SSS history {}, SSS re-blur {} (radius {} mm, strength {}, falloff {}), additive split {} "
-        "(history {}), object depth limit {}%, bias mask as history limit {}",
+        "(history {}), object depth limit {}%, bias mask as history limit {} ({} frames)",
         FsrdNum(config->FfxDenoiserCorrelationBias.value_or_default()),
         FsrdNum(config->FfxDenoiserFloorIsolation.value_or_default()),
         FsrdNum(config->FfxDenoiserBiasMaskStrength.value_or_default()),
@@ -2943,7 +2943,8 @@ std::string FsrdBuildReport(Config* config, State& state, const FSRD::ProbeReado
         FsrdNum(config->FfxDenoiserAdditiveSplit.value_or_default()),
         FsrdNum(config->FfxDenoiserAdditiveSplitHistory.value_or_default()),
         FsrdNum(config->FfxDenoiserObjectDepthLimit.value_or_default()),
-        config->FfxDenoiserBiasMaskHistory.value_or_default() ? "on" : "off"));
+        config->FfxDenoiserBiasMaskHistory.value_or_default() ? "on" : "off",
+        FsrdNum(config->FfxDenoiserBiasHistoryFrames.value_or_default())));
     Line(std::format("Buckets: diffuse as direct {}, specular as direct {}; flip view z {}",
                      config->FfxDenoiserDiffuseAsDirect.value_or_default() ? "on" : "off",
                      config->FfxDenoiserSpecularAsDirect.value_or_default() ? "on" : "off",
@@ -4231,8 +4232,7 @@ void MenuCommon::RenderActiveUpscalerSettings(RenderMenuContext& ctx)
                 ShowHelpMarker("Routes pixels flagged by the DLSS bias mask\n"
                                "(particles, alpha layers, animated textures)\n"
                                "around the denoiser. 0 = previous behaviour.\n"
-                               "With Bias Mask as History Limit: the share of\n"
-                               "frames in which their history is dropped.");
+                               "Not used by Bias Mask as History Limit.");
 
                 if (bool v = config->FfxDenoiserBiasMaskHistory.value_or_default();
                     ImGui::Checkbox("Bias Mask as History Limit", &v))
@@ -4241,11 +4241,20 @@ void MenuCommon::RenderActiveUpscalerSettings(RenderMenuContext& ctx)
                                "bias mask is set; it still denoises there. Off =\n"
                                "flagged pixels go around the denoiser as raw colour\n"
                                "(in rain much of the screen, like DenoiserBypass).\n"
-                               "On = they stay in the denoiser and lose their\n"
-                               "history in a random share of frames (mask x Bias\n"
-                               "Mask Strength), so history lasts about 1 / that\n"
-                               "many frames. Less noise, some smear on fast\n"
-                               "animation at low strength. View: InBiasMask.");
+                               "On = they stay in the denoiser and drop their\n"
+                               "history once every Bias History frames (spread\n"
+                               "evenly over the screen), and keep their reflection\n"
+                               "tracking (hit distance). View: InBiasMask.");
+
+                if (float v = config->FfxDenoiserBiasHistoryFrames.value_or_default();
+                    ImGui::SliderFloat("Bias History (frames)", &v, 1.0f, 64.0f, "%.0f", ImGuiSliderFlags_Logarithmic))
+                    config->FfxDenoiserBiasHistoryFrames = v;
+                ShowHelpMarker("With Bias Mask as History Limit: how many frames\n"
+                               "a fully masked pixel keeps its history before it\n"
+                               "is dropped (a weaker mask value keeps it longer).\n"
+                               "Lower = less smear on rain, ripples and animated\n"
+                               "textures, more noise; higher = smoother puddles,\n"
+                               "longer trails. 1 = reset every frame. Default 8.");
 
                 if (float v = config->FfxDenoiserFloorDetailBoost.value_or_default();
                     ImGui::SliderFloat("Floor Detail Boost", &v, 0, 1))

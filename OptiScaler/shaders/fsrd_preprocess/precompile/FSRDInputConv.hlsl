@@ -224,18 +224,21 @@ cbuffer CB_Packing : register(b0)
     // object's own motion; beyond it the pixel was uncovered. 0 = no limit (bit-identical).
     float ObjectDepthLimit;
 
-    // Frame counter (15 Oct), seeds the per-frame dither of the bias mask's history limit
+    // Frame counter (15 Oct), drives the schedule of the bias mask's history limit
     uint FrameIndex;
+
+    // Bias mask history limit (16 Oct): frames a fully masked pixel keeps its history (the reset period)
+    float BiasHistoryFrames;
+    float3 _Padding5;
 };
 
-// 15 Oct: white noise in [0, 1) per pixel and frame (PCG hash)
-float HashUniform(const uint2 px, const uint frame)
+// 16 Oct: rank 0..63 of the pixel in an 8x8 ordered (Bayer) dither. Any aligned run of 2^k consecutive ranks is a
+// regular lattice over the tile, so the pixels selected by one run are evenly spread, never clumped.
+uint Bayer8(const uint2 px)
 {
-    uint state = px.x * 1973u + px.y * 9277u + frame * 26699u;
-    state = state * 747796405u + 2891336453u;
-    uint word = ((state >> ((state >> 28u) + 4u)) ^ state) * 277803737u;
-    word = (word >> 22u) ^ word;
-    return float(word >> 8) * (1.0f / 16777216.0f);
+    const uint x = px.x & 7u;
+    const uint v = (px.y & 7u) ^ x;
+    return ((v & 1u) << 5) | ((x & 1u) << 4) | ((v & 2u) << 2) | ((x & 2u) << 1) | ((v & 4u) >> 1) | ((x & 4u) >> 2);
 }
 
 bool IsSet(uint mask) { return (Flags & mask) == mask; }
@@ -599,7 +602,7 @@ void CSMain(uint3 groupID : SV_GroupID, uint3 gtID : SV_GroupThreadID)
     // history; the pixel is still denoised (spatially). Routed around the denoiser, a frame where the mask covers
     // most of the screen (rain: wet surfaces with animated ripples, rain streaks) looked like DenoiserBypass. With
     // FLAGS_BIAS_HISTORY the pixel stays in the denoiser and its history is dropped instead (see the depth delta
-    // below), in a random share biasWeight of frames: the history then lasts about 1 / biasWeight frames.
+    // below), once every BiasHistoryFrames / mask frames.
     const float biasMask = IsSet(FLAGS_HAS_BIAS_MASK) ? saturate(float(InBiasMask[px])) : 0.0f;
     const float biasWeight = saturate(biasMask * BiasMaskStrength);
 
@@ -708,9 +711,22 @@ void CSMain(uint3 groupID : SV_GroupID, uint3 gtID : SV_GroupThreadID)
     // Bias mask as a history limit (15 Oct, see the bias mask block above). FSR-RR has no reactive mask, but it
     // drops a pixel's history where the depth delta doesn't match its stored depth, and then reconstructs that
     // pixel spatially like any disocclusion. A delta off by half the depth fails that test for certain.
+    //
+    // 16 Oct: on a fixed schedule instead of at random. A pixel with mask m drops its history exactly once every
+    // N = BiasHistoryFrames / m frames, so it always has between 0 and N - 1 frames behind it. Random drops with the
+    // same rate gave many pixels almost no history (a share 1/N of them is reset every frame either way, but random
+    // ones came in clumps, and puddles - mask 1 everywhere, at the old 0.5 strength a history of ~2 frames - stayed
+    // visibly noisier than their surroundings). The frame within the period comes from the pixel's Bayer rank: in
+    // any frame the pixels being reset form an even lattice. Bias Mask Strength only applies to the routing mode.
     [branch]
-    if (IsSet(FLAGS_BIAS_HISTORY) && biasWeight > 0.0f && HashUniform(px, FrameIndex) < biasWeight)
-        depthDelta += 0.5f * viewSpacePos.z;
+    if (IsSet(FLAGS_BIAS_HISTORY) && biasMask > 1e-3f)
+    {
+        const uint period = uint(clamp(BiasHistoryFrames / biasMask, 1.0f, 4096.0f) + 0.5f);
+        const uint slot = (Bayer8(px) * period) >> 6; // 0 .. period - 1, contiguous Bayer runs per slot
+
+        if ((FrameIndex % period) == slot)
+            depthDelta += 0.5f * viewSpacePos.z;
+    }
     const float3 motionOut = float3(motionIn, depthDelta);
     OutMotion[px] = half4(motionOut, 0.0f);
 
@@ -820,7 +836,10 @@ void CSMain(uint3 groupID : SV_GroupID, uint3 gtID : SV_GroupThreadID)
             // so with both switches clear the result is bit-identical to before.
             const float gateRoughness = IsSet(FLAGS_AB_GATE_NO_ROUGHNESS) ? 1.0f : SoftBelow(roughness, 0.30f, 0.15f);
             const float gateEmissive = 1.0f - isEmissive;
-            const float gateBias = IsSet(FLAGS_AB_GATE_NO_BIAS) ? 1.0f : (1.0f - biasWeight);
+            // 16 Oct: with the bias mask as a history limit the masked pixels are denoised, and a puddle's
+            // reflection needs its hit distance to be reprojected as a reflection; the gate stays open there.
+            const float gateBias =
+                (IsSet(FLAGS_AB_GATE_NO_BIAS) || IsSet(FLAGS_BIAS_HISTORY)) ? 1.0f : (1.0f - biasWeight);
             const float canUseHitDist = gateRoughness * gateEmissive * gateBias;
             // 25 Sep A/Bs: reconstruct missing hit distances; let reflections on surfaces that move by
             // themselves (the driven car) reproject with the surface, since the denoiser's reflected-

@@ -1364,6 +1364,7 @@ bool FSRDFeatureDx12::ConvertDenoiserBuffers(ID3D12GraphicsCommandList* InComman
     _convDesc.AdditiveHistoryAlpha = cfg.FfxDenoiserAdditiveSplitHistory.value_or_default();
     // Menu value is percent of depth per frame
     _convDesc.ObjectDepthLimit = 0.01f * cfg.FfxDenoiserObjectDepthLimit.value_or_default();
+    _convDesc.BiasHistoryFrames = cfg.FfxDenoiserBiasHistoryFrames.value_or_default();
     _convDesc.SplitPriorStrength = cfg.FfxDenoiserSplitPrior.value_or_default();
     _convDesc.RoughnessProbe = cfg.FfxDenoiserRoughnessProbe.value_or_default();
 
