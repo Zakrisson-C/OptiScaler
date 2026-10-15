@@ -1374,6 +1374,10 @@ bool FSRDFeatureDx12::ConvertDenoiserBuffers(ID3D12GraphicsCommandList* InComman
     if (IsSssReblurActive())
         _convDesc.Flags |= (uint32_t) FSRDConvFlags::SssResynth;
 
+    // Bias mask as a history limit instead of a route around the denoiser (15 Oct)
+    if (cfg.FfxDenoiserBiasMaskHistory.value_or_default())
+        _convDesc.Flags |= (uint32_t) FSRDConvFlags::BiasHistory;
+
     // Troubleshooting (24 Sep). A/B switches for the pipeline audit's findings, all gated by the
     // master switch so a chosen set flips as one. Each bit off = previous behaviour.
     {

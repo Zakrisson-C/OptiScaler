@@ -2917,7 +2917,7 @@ std::string FsrdBuildReport(Config* config, State& state, const FSRD::ProbeReado
         "normal sharpness {}, albedo guide {}, luma symmetry {}, grazing {}, soft min {}, roughness "
         "exponent {}, hit distance scale {}, spec guard {} (fade {}..{}), split prior {}, firefly clamp {}, "
         "SSS separation {}, SSS history {}, SSS re-blur {} (radius {} mm, strength {}, falloff {}), additive split {} "
-        "(history {}), object depth limit {}%",
+        "(history {}), object depth limit {}%, bias mask as history limit {}",
         FsrdNum(config->FfxDenoiserCorrelationBias.value_or_default()),
         FsrdNum(config->FfxDenoiserFloorIsolation.value_or_default()),
         FsrdNum(config->FfxDenoiserBiasMaskStrength.value_or_default()),
@@ -2942,7 +2942,8 @@ std::string FsrdBuildReport(Config* config, State& state, const FSRD::ProbeReado
         FsrdNum(config->FfxDenoiserSssFalloff.value_or_default()),
         FsrdNum(config->FfxDenoiserAdditiveSplit.value_or_default()),
         FsrdNum(config->FfxDenoiserAdditiveSplitHistory.value_or_default()),
-        FsrdNum(config->FfxDenoiserObjectDepthLimit.value_or_default())));
+        FsrdNum(config->FfxDenoiserObjectDepthLimit.value_or_default()),
+        config->FfxDenoiserBiasMaskHistory.value_or_default() ? "on" : "off"));
     Line(std::format("Buckets: diffuse as direct {}, specular as direct {}; flip view z {}",
                      config->FfxDenoiserDiffuseAsDirect.value_or_default() ? "on" : "off",
                      config->FfxDenoiserSpecularAsDirect.value_or_default() ? "on" : "off",
@@ -4229,7 +4230,22 @@ void MenuCommon::RenderActiveUpscalerSettings(RenderMenuContext& ctx)
                     config->FfxDenoiserBiasMaskStrength = v;
                 ShowHelpMarker("Routes pixels flagged by the DLSS bias mask\n"
                                "(particles, alpha layers, animated textures)\n"
-                               "around the denoiser. 0 = previous behaviour.");
+                               "around the denoiser. 0 = previous behaviour.\n"
+                               "With Bias Mask as History Limit: the share of\n"
+                               "frames in which their history is dropped.");
+
+                if (bool v = config->FfxDenoiserBiasMaskHistory.value_or_default();
+                    ImGui::Checkbox("Bias Mask as History Limit", &v))
+                    config->FfxDenoiserBiasMaskHistory = v;
+                ShowHelpMarker("DLSS-RR only favours the current frame where the\n"
+                               "bias mask is set; it still denoises there. Off =\n"
+                               "flagged pixels go around the denoiser as raw colour\n"
+                               "(in rain much of the screen, like DenoiserBypass).\n"
+                               "On = they stay in the denoiser and lose their\n"
+                               "history in a random share of frames (mask x Bias\n"
+                               "Mask Strength), so history lasts about 1 / that\n"
+                               "many frames. Less noise, some smear on fast\n"
+                               "animation at low strength. View: InBiasMask.");
 
                 if (float v = config->FfxDenoiserFloorDetailBoost.value_or_default();
                     ImGui::SliderFloat("Floor Detail Boost", &v, 0, 1))

@@ -39,6 +39,8 @@ static const uint2 s_ThreadGroupSize = uint2(THREAD_GROUP_SIZE_X, THREAD_GROUP_S
 // 28 Sep: SSS re-blur on (FSRDSssBlur.hlsl). The SSS contribution is recomputed from the denoised colour after
 // composition, so the averaged one is not added back here. Above the debug mode bits (16-23).
 #define FLAGS_SSS_RESYNTH               (1 << 24)
+// 15 Oct: bias mask as a history limit instead of a route around the denoiser (see the bias mask block)
+#define FLAGS_BIAS_HISTORY              (1 << 25)
 
 // Debug Flags
 #define FLAGS_DEBUG                     (1 << 16)
@@ -221,8 +223,20 @@ cbuffer CB_Packing : register(b0)
     // Object depth limit (1 Oct): largest depth change per frame, as a fraction of the depth, still read as an
     // object's own motion; beyond it the pixel was uncovered. 0 = no limit (bit-identical).
     float ObjectDepthLimit;
-    float _Padding4;
+
+    // Frame counter (15 Oct), seeds the per-frame dither of the bias mask's history limit
+    uint FrameIndex;
 };
+
+// 15 Oct: white noise in [0, 1) per pixel and frame (PCG hash)
+float HashUniform(const uint2 px, const uint frame)
+{
+    uint state = px.x * 1973u + px.y * 9277u + frame * 26699u;
+    state = state * 747796405u + 2891336453u;
+    uint word = ((state >> ((state >> 28u) + 4u)) ^ state) * 277803737u;
+    word = (word >> 22u) ^ word;
+    return float(word >> 8) * (1.0f / 16777216.0f);
+}
 
 bool IsSet(uint mask) { return (Flags & mask) == mask; }
 uint GetDebugMode() { return (Flags & FLAGS_DEBUG_MODE_MASK); }
@@ -580,9 +594,17 @@ void CSMain(uint3 groupID : SV_GroupID, uint3 gtID : SV_GroupThreadID)
     // denoiser entirely instead of trying to classify it inside the floor prefilter.
     // An absent mask reads as 0 through the null descriptor, so the flag is belt and
     // braces rather than load bearing.
+    //
+    // 15 Oct: that is not what DLSS-RR does with the mask. It only asks for the current frame to be favoured over
+    // history; the pixel is still denoised (spatially). Routed around the denoiser, a frame where the mask covers
+    // most of the screen (rain: wet surfaces with animated ripples, rain streaks) looked like DenoiserBypass. With
+    // FLAGS_BIAS_HISTORY the pixel stays in the denoiser and its history is dropped instead (see the depth delta
+    // below), in a random share biasWeight of frames: the history then lasts about 1 / biasWeight frames.
     const float biasMask = IsSet(FLAGS_HAS_BIAS_MASK) ? saturate(float(InBiasMask[px])) : 0.0f;
     const float biasWeight = saturate(biasMask * BiasMaskStrength);
-    floorColor.rgb = lerp(floorColor.rgb, rawColor, biasWeight);
+
+    if (!IsSet(FLAGS_BIAS_HISTORY))
+        floorColor.rgb = lerp(floorColor.rgb, rawColor, biasWeight);
 
     PROBE_WRITE(PROBE_RAW_DIFF_ALBEDO, float4(GetSafeFP16(InDiffAlbedo[px].rgb), biasMask));
     PROBE_WRITE(PROBE_SPEC_USED, float4(specReflectance.rgb, biasWeight));
@@ -682,6 +704,13 @@ void CSMain(uint3 groupID : SV_GroupID, uint3 gtID : SV_GroupThreadID)
             depthDelta = lerp(depthDelta, prevDepth - viewSpacePos.z, selfMotion);
         }
     }
+
+    // Bias mask as a history limit (15 Oct, see the bias mask block above). FSR-RR has no reactive mask, but it
+    // drops a pixel's history where the depth delta doesn't match its stored depth, and then reconstructs that
+    // pixel spatially like any disocclusion. A delta off by half the depth fails that test for certain.
+    [branch]
+    if (IsSet(FLAGS_BIAS_HISTORY) && biasWeight > 0.0f && HashUniform(px, FrameIndex) < biasWeight)
+        depthDelta += 0.5f * viewSpacePos.z;
     const float3 motionOut = float3(motionIn, depthDelta);
     OutMotion[px] = half4(motionOut, 0.0f);
 

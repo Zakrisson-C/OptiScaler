@@ -201,7 +201,9 @@ struct alignas(16) Constants
     // Object depth limit (1 Oct): depth change per frame, as a fraction of depth, beyond which a self-moving
     // pixel counts as uncovered. 0 = no limit (bit-identical).
     float ObjectDepthLimit;
-    float _Padding4;
+
+    // Frame counter (15 Oct), seeds the bias mask's history dither
+    uint32_t FrameIndex;
 };
 
 // Matches the cbuffer layout DXC reports for CB_Packing in FSRDInputConv.hlsl.
@@ -214,6 +216,7 @@ static_assert(offsetof(Constants, ProjMatrix) == 288, "Conversion::Constants out
 static_assert(offsetof(Constants, SssHistoryAlpha) == 352, "Conversion::Constants out of sync with CB_Packing");
 static_assert(offsetof(Constants, AdditiveSeparation) == 356, "Conversion::Constants out of sync with CB_Packing");
 static_assert(offsetof(Constants, ObjectDepthLimit) == 360, "Conversion::Constants out of sync with CB_Packing");
+static_assert(offsetof(Constants, FrameIndex) == 364, "Conversion::Constants out of sync with CB_Packing");
 
 union Input
 {

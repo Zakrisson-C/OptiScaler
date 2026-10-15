@@ -100,6 +100,10 @@ class FSRDPreprocessor_Dx12
         // 28 Sep: SSS re-blur on. The SSS contribution is recomputed from the denoised colour after composition
         // (FSRDSssBlur.hlsl), so the averaged one isn't added back around the denoiser. Above the debug bits.
         SssResynth = 1 << 24,
+
+        // 15 Oct: bias-masked pixels stay in the denoiser, their history dropped in a random share of frames
+        // (BiasMaskStrength x mask), instead of being routed around it.
+        BiasHistory = 1 << 25,
     };
 
     enum class CompFlags : uint32_t

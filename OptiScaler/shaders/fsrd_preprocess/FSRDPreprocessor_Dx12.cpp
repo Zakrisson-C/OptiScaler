@@ -311,6 +311,7 @@ struct FSRDPreprocessor_Dx12::Impl
     // depth (0 = no SSS material). m_sssRead is last frame's.
     ComPtr<ID3D12Resource> m_sssHistory[2];
     uint32_t m_sssRead = 0;
+    uint32_t m_convFrame = 0; // 15 Oct: frame counter for the packing shader's dither
     bool m_sssWasActive = false; // false = history invalid, the next active frame starts it afresh
 
     // Additive light split (27 Sep): ping-pong specular share history and the intercept for the view.
@@ -742,6 +743,7 @@ struct FSRDPreprocessor_Dx12::Impl
         in.Resources.InSplitFit = m_splitCurrent;
         packConstants.AdditiveSeparation = (m_splitCurrent != nullptr) ? desc.AdditiveSeparation : 0.0f;
         packConstants.ObjectDepthLimit = std::clamp(desc.ObjectDepthLimit, 0.0f, 1.0f);
+        packConstants.FrameIndex = m_convFrame++;
 
         if (!sssActive)
             packConstants.SssSeparation = 0.0f;
