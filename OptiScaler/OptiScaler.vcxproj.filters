@@ -563,6 +563,9 @@
     <ClInclude Include="hooks\D3D12_Hooks.h">
       <Filter>Header Files</Filter>
     </ClInclude>
+    <ClInclude Include="hooks\ShaderDump_Dx12.h">
+      <Filter>Header Files</Filter>
+    </ClInclude>
     <ClInclude Include="hooks\D3D11_Hooks.h">
       <Filter>Header Files</Filter>
     </ClInclude>
@@ -1327,6 +1330,9 @@
       <Filter>Source Files</Filter>
     </ClCompile>
     <ClCompile Include="hooks\D3D12_Hooks.cpp">
+      <Filter>Source Files</Filter>
+    </ClCompile>
+    <ClCompile Include="hooks\ShaderDump_Dx12.cpp">
       <Filter>Source Files</Filter>
     </ClCompile>
     <ClCompile Include="hooks\D3D11_Hooks.cpp">

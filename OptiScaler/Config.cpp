@@ -318,6 +318,9 @@ bool Config::Reload(std::filesystem::path iniPath)
             // Troubleshooting keybinds (24 Sep). The switches they drive stay runtime-only.
             FfxDenoiserAbShortcutKey.set_from_config(readInt("FSR-RR", "ABShortcutKey"));
             FfxDenoiserDebugViewShortcutKey.set_from_config(readInt("FSR-RR", "DebugViewShortcutKey"));
+
+            // NRD route debug aid (17 Oct), read once at device creation
+            DumpComputeShaders.set_from_config(readBool("FSR-RR", "DumpComputeShaders"));
         }
 
         // XeSS
@@ -1173,6 +1176,9 @@ bool Config::SaveIni()
         ini.SetValue(
             "FSR-RR", "DebugViewShortcutKey",
             GetIntValue(Instance()->FfxDenoiserDebugViewShortcutKey.value_for_config(), keySetting > 0).c_str());
+
+        ini.SetValue("FSR-RR", "DumpComputeShaders",
+                     GetBoolValue(Instance()->DumpComputeShaders.value_for_config()).c_str());
     }
 
     // XeSS

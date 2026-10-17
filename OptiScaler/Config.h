@@ -568,6 +568,11 @@ class Config
     // like its sibling above -- not ini-persisted. Requires a denoiser context recreate.
     CustomOptional<bool> FfxDenoiserValidation { false };
 
+    // NRD route, 17 Oct: write every compute shader the process creates to ShaderDump\ next to OptiScaler.dll
+    // (hooks/ShaderDump_Dx12). ini-only ([FSR-RR] DumpComputeShaders), read once when the D3D12 device is hooked;
+    // off = no hooks installed.
+    CustomOptional<bool> DumpComputeShaders { false };
+
     // Transplant diagnostic, 23 Sep: convert a right-handed view space to left-handed before handing the
     // view/projection matrices to denoiser 1.2 (negate view z, compensate in the projection). Off = pass the
     // game's matrices through as-is. For settling plan §6b/§6g on screen, not a tuning knob. Runtime-only.

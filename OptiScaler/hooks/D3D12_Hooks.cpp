@@ -21,6 +21,7 @@
 #include <misc/IdentifyGpu.h>
 
 #include "Hook_Utils.h"
+#include "ShaderDump_Dx12.h"
 
 #pragma intrinsic(_ReturnAddress)
 
@@ -2302,6 +2303,9 @@ static void HookToDevice(ID3D12Device* InDevice)
             o_GetResourceAllocationInfo = nullptr;
         }
     }
+
+    // NRD route debug aid, no-op unless [FSR-RR] DumpComputeShaders=true
+    ShaderDump_Dx12::HookDevice(InDevice);
 
     HookToCommandList(InDevice);
 
